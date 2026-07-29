@@ -28,6 +28,10 @@ out/
 # ldraw-parts-index.json is committed — it's the derived index, regenerated from /ldraw/
 /ldraw/
 
+# Generated import artifacts
+/imports/**/*.json
+/imports/**/*.xml
+
 *.o
 *.so
 *.dylib
