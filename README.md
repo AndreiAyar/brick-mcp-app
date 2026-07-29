@@ -159,6 +159,14 @@ The 3D viewport supports seven interaction modes, switchable via the toolbar or 
 - **Rotation**: 0, 90, 180, or 270 degrees (swaps X/Z dimensions)
 - All positions are integers snapped to the stud grid
 
+### Importing LXFML Models
+
+Use `brick_import_lxfml` for `.lxfml` files. It parses the raw XML, maps LEGO design/material IDs through the bundled `imports/generic_iron_studio_v5_lxfml/ldraw.xml`, applies per-part correction transforms, remaps axes, and emits exact scene transforms.
+
+Do not pass raw LXFML `Bone` matrices to `brick_place_transform`. That tool only accepts canonical LDraw transforms or Three.js `matrix16` transforms already converted to scene units. Invalid transform units should be rejected instead of silently falling back to `scene`.
+
+For guided building, use `brick_prepare_lxfml_build` instead of importing the whole model. It parses `BuildingInstruction` / `Step` / `In brickRef` data into a separate in-memory build session without touching the current scene. Then inspect with `brick_get_lxfml_build_step` and place with `brick_place_lxfml_next` using `unit: "part"` for piece-by-piece building or `unit: "step"` for one LEGO instruction step at a time.
+
 ## Adding New Brick Types
 
 Adding a new brick requires just two files. The catalog, server validation, geometry rendering, and UI selector all pick it up automatically.
