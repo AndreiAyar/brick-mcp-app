@@ -1,9 +1,28 @@
 import type { BrickInstance, BrickType, AABB } from '../types';
 import { getBrickType } from './BrickCatalog';
-import { computeOccupiedCells, type BrickLike } from './OccupancyGrid';
+import { computeOccupiedCells, isCardinalRotation, type BrickLike } from './OccupancyGrid';
 
 export function getBrickAABB(brick: BrickInstance, brickType: BrickType): AABB {
   const { x, y, z } = brick.position;
+  if (!isCardinalRotation(brick.rotation)) {
+    const rotRad = -(brick.rotation * Math.PI) / 180;
+    const cos = Math.cos(rotRad);
+    const sin = Math.sin(rotRad);
+    const corners = [
+      [0, 0],
+      [brickType.studsX, 0],
+      [0, brickType.studsZ],
+      [brickType.studsX, brickType.studsZ],
+    ].map(([lx, lz]) => ({ x: lx * cos + lz * sin, z: -lx * sin + lz * cos }));
+    return {
+      minX: x,
+      maxX: x + Math.max(...corners.map(c => c.x)) - Math.min(...corners.map(c => c.x)),
+      minY: y,
+      maxY: y + brickType.heightUnits,
+      minZ: z,
+      maxZ: z + Math.max(...corners.map(c => c.z)) - Math.min(...corners.map(c => c.z)),
+    };
+  }
   const isRotated = brick.rotation === 90 || brick.rotation === 270;
   const sx = isRotated ? brickType.studsZ : brickType.studsX;
   const sz = isRotated ? brickType.studsX : brickType.studsZ;
@@ -20,9 +39,10 @@ export function checkSupportClient(
   x: number,
   y: number,
   z: number,
-  rotation: 0 | 90 | 180 | 270,
+  rotation: number,
   excludeId?: string,
 ): boolean {
+  if (!isCardinalRotation(rotation)) return true;
   const brickType = getBrickType(typeId);
   if (!brickType) return false;
   if (y === 0) return true;
@@ -53,9 +73,10 @@ export function checkCollisionClient(
   x: number,
   y: number,
   z: number,
-  rotation: 0 | 90 | 180 | 270,
+  rotation: number,
   excludeId?: string,
 ): boolean {
+  if (!isCardinalRotation(rotation)) return false;
   const brickType = getBrickType(typeId);
   if (!brickType) return true;
 
