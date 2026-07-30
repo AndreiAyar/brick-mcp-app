@@ -8,6 +8,18 @@ export interface BrickInstance {
   position: { x: number; y: number; z: number };
   rotation: 0 | 90 | 180 | 270;
   color: string;
+  transform?: BrickTransform;
+}
+
+export interface BrickTransform {
+  format: 'matrix12' | 'matrix16';
+  /**
+   * matrix12 uses LDraw line-type-1 order:
+   * a,b,c,d,e,f,g,h,i,x,y,z.
+   * matrix16 uses row-major 4x4 order for Three.js Matrix4.set().
+   */
+  matrix: number[];
+  units: 'scene' | 'ldd';
 }
 
 export interface CameraState {
