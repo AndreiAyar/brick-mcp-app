@@ -34,7 +34,7 @@ export default function BrickBuilder({ app, sceneData, cameraState, onToolResult
   const [mode, setMode] = useState<InteractionMode>('place');
   const [selectedBrickType, setSelectedBrickType] = useState<BrickType>(DEFAULT_BRICK_TYPE);
   const [selectedColor, setSelectedColor] = useState(DEFAULT_COLORS[0].hex);
-  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(0);
+  const [rotation, setRotation] = useState(0);
   const [selectedBrickId, setSelectedBrickId] = useState<string | null>(null);
 
   const handle = useSceneManager(app, containerRef, sceneData, cameraState);
@@ -111,6 +111,11 @@ export default function BrickBuilder({ app, sceneData, cameraState, onToolResult
     [handle],
   );
 
+  const handleRotationInput = useCallback((value: string) => {
+    const next = Number(value);
+    if (Number.isFinite(next)) setRotation(next);
+  }, []);
+
   useInteraction({
     app,
     handle,
@@ -161,7 +166,7 @@ export default function BrickBuilder({ app, sceneData, cameraState, onToolResult
       />
       <SceneInfo app={app} sceneData={sceneData} onToolResult={onToolResult} />
       {/* Rotation indicator */}
-      {mode === 'place' && (
+      {(mode === 'place' || mode === 'rotate') && (
         <div style={{
           position: 'absolute',
           bottom: 8,
@@ -169,13 +174,33 @@ export default function BrickBuilder({ app, sceneData, cameraState, onToolResult
           transform: 'translateX(-50%)',
           background: 'rgba(0,0,0,0.7)',
           borderRadius: 6,
-          padding: '4px 10px',
+          padding: '6px 10px',
           color: '#fff',
           fontSize: 11,
           zIndex: 10,
           opacity: 0.8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
         }}>
-          {selectedBrickType.name} · {rotation}° · Press R to rotate
+          <span>{mode === 'place' ? selectedBrickType.name : 'Rotate'} · Press R</span>
+          <input
+            type="number"
+            value={rotation}
+            step={1}
+            onChange={(e) => handleRotationInput(e.target.value)}
+            style={{
+              width: 70,
+              height: 24,
+              borderRadius: 4,
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'rgba(255,255,255,0.12)',
+              color: '#fff',
+              padding: '0 6px',
+              fontSize: 12,
+            }}
+          />
+          <span>deg</span>
         </div>
       )}
     </div>
