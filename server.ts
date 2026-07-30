@@ -12,7 +12,18 @@ import path from "node:path";
 import { z } from "zod";
 import type { BrickDefinition } from "./src/bricks/types.js";
 import { parseLDrawPart, setLDrawDir } from "./src/ldraw/ldraw-dimensions.js";
-import { OccupancyGrid, computeOccupiedCells, computeCollisionCells, computeBottomCells } from "./src/engine/OccupancyGrid.js";
+import { OccupancyGrid, computeOccupiedCells, computeCollisionCells, computeBottomCells, isCardinalRotation } from "./src/engine/OccupancyGrid.js";
+import {
+  convertLxfmlPart,
+  ldrawLineType1,
+  parseLDConfigColors,
+  parseLDrawXml,
+  parseLxfmlBuildSteps,
+  parseLxfmlParts,
+  type CanonicalLxfmlPart,
+  type LDrawMapping,
+  type LxfmlPartInput,
+} from "./src/ldraw/lxfml-converter.js";
 
 // Initialize LDraw directory for the server-side parser
 const LDRAW_DIR = path.join(
@@ -84,13 +95,43 @@ interface BrickInstance {
   id: string;
   typeId: string;
   position: { x: number; y: number; z: number };
-  rotation: 0 | 90 | 180 | 270;
+  rotation: number;
   color: string;
+  transform?: BrickTransform;
+}
+
+interface BrickTransform {
+  format: "matrix12" | "matrix16";
+  matrix: number[];
+  units: "scene" | "ldd";
 }
 
 interface SceneData {
   name: string;
   bricks: BrickInstance[];
+}
+
+interface LxfmlBuildPart {
+  raw: LxfmlPartInput;
+  converted: CanonicalLxfmlPart | null;
+  reason?: string;
+}
+
+interface LxfmlBuildBrick {
+  brickRef: string;
+  parts: LxfmlBuildPart[];
+}
+
+interface LxfmlBuildSession {
+  id: string;
+  name: string;
+  createdAt: string;
+  steps: { index: number; refID: string; bricks: LxfmlBuildBrick[] }[];
+  stepCursor: number;
+  brickCursor: number;
+  partCursor: number;
+  placed: number;
+  skipped: Record<string, number>;
 }
 
 interface AABB {
@@ -106,6 +147,36 @@ const grid = new OccupancyGrid();
 // ── AABB helpers (used for footprint reporting and bounds checking) ──────────
 
 function getBrickAABB(brick: BrickInstance, brickType: BrickDefinition): AABB {
+  if (brick.transform) {
+    const { x, y, z } = getTransformPosition(brick.transform);
+    return { minX: x, maxX: x, minY: y, maxY: y, minZ: z, maxZ: z };
+  }
+
+  if (!isCardinalRotation(brick.rotation)) {
+    const { x, y, z } = brick.position;
+    const rotRad = -(brick.rotation * Math.PI) / 180;
+    const cos = Math.cos(rotRad);
+    const sin = Math.sin(rotRad);
+    const corners = [
+      [0, 0],
+      [brickType.studsX, 0],
+      [0, brickType.studsZ],
+      [brickType.studsX, brickType.studsZ],
+    ].map(([lx, lz]) => ({ x: lx * cos + lz * sin, z: -lx * sin + lz * cos }));
+    const minLocalX = Math.min(...corners.map(c => c.x));
+    const maxLocalX = Math.max(...corners.map(c => c.x));
+    const minLocalZ = Math.min(...corners.map(c => c.z));
+    const maxLocalZ = Math.max(...corners.map(c => c.z));
+    return {
+      minX: x,
+      maxX: x + (maxLocalX - minLocalX),
+      minY: y,
+      maxY: y + brickType.heightUnits,
+      minZ: z,
+      maxZ: z + (maxLocalZ - minLocalZ),
+    };
+  }
+
   if (brickType.occupancyMap) {
     // Derive footprint from actual occupied cells (handles non-rectangular parts)
     const cells = computeOccupiedCells(brick as any, brickType);
@@ -123,7 +194,8 @@ function getBrickAABB(brick: BrickInstance, brickType: BrickDefinition): AABB {
     return { minX, maxX, minY, maxY, minZ, maxZ };
   }
   const { x, y, z } = brick.position;
-  const isRotated = brick.rotation === 90 || brick.rotation === 270;
+  const normalized = normalizeCardinalRotation(brick.rotation);
+  const isRotated = normalized === 90 || normalized === 270;
   const sx = isRotated ? brickType.studsZ : brickType.studsX;
   const sz = isRotated ? brickType.studsX : brickType.studsZ;
   return {
@@ -133,12 +205,23 @@ function getBrickAABB(brick: BrickInstance, brickType: BrickDefinition): AABB {
   };
 }
 
+function normalizeCardinalRotation(rotation: number): 0 | 90 | 180 | 270 {
+  const normalized = ((rotation % 360) + 360) % 360;
+  return normalized === 90 || normalized === 180 || normalized === 270 ? normalized : 0;
+}
+
+function parseRotation(value: string | number | undefined): number | null {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : null;
+}
+
 function checkCollision(
   _bricks: BrickInstance[],
   newBrick: BrickInstance,
   newType: BrickDefinition,
   excludeId?: string,
 ): boolean {
+  if (newBrick.transform || !isCardinalRotation(newBrick.rotation)) return false;
   const cells = computeCollisionCells(newBrick, newType);
   return !grid.canPlace(cells, excludeId);
 }
@@ -237,6 +320,7 @@ function scanForOpenSlot(
 }
 
 function checkSupport(_bricks: BrickInstance[], brick: BrickInstance, brickType: BrickDefinition): boolean {
+  if (brick.transform || !isCardinalRotation(brick.rotation)) return true;
   return grid.hasSupport(brick, brickType);
 }
 
@@ -246,6 +330,7 @@ function checkSupport(_bricks: BrickInstance[], brick: BrickInstance, brickType:
  * the requested y. Returns max(top-of-highest-occupant) across columns, or 0.
  */
 function findLandingY(brick: BrickInstance, brickType: BrickDefinition): number {
+  if (brick.transform || !isCardinalRotation(brick.rotation)) return brick.position.y;
   const bottomCells = computeBottomCells(brick, brickType);
   let landingY = 0;
   for (const c of bottomCells) {
@@ -265,6 +350,7 @@ function findUnsupported(bricks: BrickInstance[]): string[] {
   tempGrid.rebuild(bricks, (id) => findBrickType(id) ?? undefined);
   const unsupported: string[] = [];
   for (const brick of bricks) {
+    if (brick.transform || !isCardinalRotation(brick.rotation)) continue;
     const bt = findBrickType(brick.typeId);
     if (!bt) continue;
     if (!tempGrid.hasSupport(brick, bt)) {
@@ -276,6 +362,190 @@ function findUnsupported(bricks: BrickInstance[]): string[] {
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+function getTransformPosition(transform: BrickTransform): { x: number; y: number; z: number } {
+  if (transform.format === "matrix12") {
+    const scale = transform.units === "ldd" ? 0.05 : 1;
+    return {
+      x: (transform.matrix[9] ?? 0) * scale,
+      y: (transform.matrix[10] ?? 0) * (transform.units === "ldd" ? -0.05 : 1),
+      z: (transform.matrix[11] ?? 0) * scale,
+    };
+  }
+  return {
+    x: transform.matrix[3] ?? 0,
+    y: transform.matrix[7] ?? 0,
+    z: transform.matrix[11] ?? 0,
+  };
+}
+
+function normalizeTransform(format: "matrix12" | "matrix16", matrix: number[], units: "scene" | "ldd"): BrickTransform | null {
+  const expected = format === "matrix12" ? 12 : 16;
+  if (matrix.length !== expected || matrix.some((v) => !Number.isFinite(v))) return null;
+  return { format, matrix, units };
+}
+
+let cachedLDConfigColors: Map<string, { code: string; hex: string }> | null = null;
+function getLDConfigColors(): Map<string, { code: string; hex: string }> {
+  if (!cachedLDConfigColors) {
+    cachedLDConfigColors = parseLDConfigColors(fsSync.readFileSync(path.join(LDRAW_DIR, "LDConfig.ldr"), "utf-8"));
+  }
+  return cachedLDConfigColors;
+}
+
+const DEFAULT_LDRAW_XML_PATH = path.join(
+  import.meta.filename.endsWith(".ts") ? import.meta.dirname : path.join(import.meta.dirname, ".."),
+  "imports",
+  "generic_iron_studio_v5_lxfml",
+  "ldraw.xml",
+);
+
+let cachedDefaultMapping: LDrawMapping | null = null;
+function getLDrawMapping(mappingXml?: string): LDrawMapping {
+  if (mappingXml) return parseLDrawXml(mappingXml);
+  if (!cachedDefaultMapping) {
+    cachedDefaultMapping = parseLDrawXml(fsSync.readFileSync(DEFAULT_LDRAW_XML_PATH, "utf-8"));
+  }
+  return cachedDefaultMapping;
+}
+
+function createLxfmlBuildSession(input: {
+  lxfmlText: string;
+  name?: string;
+  mapping: LDrawMapping;
+  colors: Map<string, { code: string; hex: string }>;
+}): LxfmlBuildSession {
+  const rawParts = parseLxfmlParts(input.lxfmlText);
+  const partsByBrickRef = new Map<string, LxfmlBuildPart[]>();
+
+  for (const raw of rawParts) {
+    const converted = convertLxfmlPart(raw, input.mapping, input.colors);
+    const reason = !converted
+      ? "conversion_failed"
+      : !findBrickType(converted.ldrawPartId)
+        ? "missing_ldraw_geometry"
+        : undefined;
+    const part: LxfmlBuildPart = { raw, converted: reason ? null : converted, reason };
+    const list = partsByBrickRef.get(raw.brickRef) ?? [];
+    list.push(part);
+    partsByBrickRef.set(raw.brickRef, list);
+  }
+
+  const parsedSteps = parseLxfmlBuildSteps(input.lxfmlText);
+  const steps = parsedSteps.length > 0
+    ? parsedSteps.map((step) => ({
+      index: step.index,
+      refID: step.refID,
+      bricks: step.brickRefs.map((brickRef) => ({ brickRef, parts: partsByBrickRef.get(brickRef) ?? [] })),
+    }))
+    : [{
+      index: 0,
+      refID: "0",
+      bricks: [...partsByBrickRef.entries()].map(([brickRef, parts]) => ({ brickRef, parts })),
+    }];
+
+  return {
+    id: crypto.randomUUID(),
+    name: input.name ?? "LXFML build",
+    createdAt: new Date().toISOString(),
+    steps,
+    stepCursor: 0,
+    brickCursor: 0,
+    partCursor: 0,
+    placed: 0,
+    skipped: {},
+  };
+}
+
+function summarizeLxfmlBuildSession(session: LxfmlBuildSession) {
+  let totalParts = 0;
+  let buildableParts = 0;
+  let missingParts = 0;
+  for (const step of session.steps) {
+    for (const brick of step.bricks) {
+      for (const part of brick.parts) {
+        totalParts++;
+        if (part.converted) buildableParts++;
+        else missingParts++;
+      }
+    }
+  }
+
+  return {
+    sessionId: session.id,
+    name: session.name,
+    steps: session.steps.length,
+    totalParts,
+    buildableParts,
+    missingParts,
+    cursor: {
+      stepIndex: session.stepCursor,
+      brickIndex: session.brickCursor,
+      partIndex: session.partCursor,
+      done: session.stepCursor >= session.steps.length,
+    },
+    placed: session.placed,
+    skipped: session.skipped,
+  };
+}
+
+function getCursorPart(session: LxfmlBuildSession): {
+  step: LxfmlBuildSession["steps"][number];
+  brick: LxfmlBuildBrick;
+  part: LxfmlBuildPart;
+} | null {
+  while (session.stepCursor < session.steps.length) {
+    const step = session.steps[session.stepCursor];
+    while (session.brickCursor < step.bricks.length) {
+      const brick = step.bricks[session.brickCursor];
+      if (session.partCursor < brick.parts.length) {
+        return { step, brick, part: brick.parts[session.partCursor] };
+      }
+      session.brickCursor++;
+      session.partCursor = 0;
+    }
+    session.stepCursor++;
+    session.brickCursor = 0;
+    session.partCursor = 0;
+  }
+  return null;
+}
+
+function advanceLxfmlCursor(session: LxfmlBuildSession): void {
+  session.partCursor++;
+  getCursorPart(session);
+}
+
+function placeLxfmlBuildPart(session: LxfmlBuildSession, item: ReturnType<typeof getCursorPart>) {
+  if (!item) return { ok: false, done: true };
+  const { part } = item;
+  if (!part.converted) {
+    const key = part.raw.designID;
+    session.skipped[key] = (session.skipped[key] ?? 0) + 1;
+    advanceLxfmlCursor(session);
+    return { ok: false, skipped: true, designID: key, reason: part.reason ?? "missing" };
+  }
+
+  const transform: BrickTransform = { format: "matrix16", matrix: part.converted.sceneMatrix16, units: "scene" };
+  const instance: BrickInstance = {
+    id: part.converted.id,
+    typeId: part.converted.ldrawPartId,
+    position: getTransformPosition(transform),
+    rotation: 0,
+    color: part.converted.color,
+    transform,
+  };
+  scene.bricks.push(instance);
+  session.placed++;
+  advanceLxfmlCursor(session);
+  return {
+    ok: true,
+    id: instance.id,
+    typeId: instance.typeId,
+    color: instance.color,
+    legoDesignID: part.converted.legoDesignID,
+  };
 }
 
 // ── Server factory ───────────────────────────────────────────────────────────
@@ -295,14 +565,25 @@ You only need to call brick_read_me once. Do NOT call it again — you will not 
    - brick_search_parts → Get any category or search by name. Results include dimensions (studsX, studsZ, heightUnits) so you can brick_place directly. Example: brick_search_parts({category: "Arch"}) returns all arches; brick_search_parts({query: "corner"}) finds corner parts across categories.
 3. brick_render_scene → Call BEFORE placing any bricks. Opens the 3D viewer. If you skip this step, the user cannot see anything you build.
 4. brick_place → Place one or many bricks via CSV (one row per brick). They stream into the viewer live, row by row, as the tool runs. Batch cap: ${MAX_BATCH_ROWS} rows / ${MAX_NEW_TYPES_PER_BATCH} new part types per call — for large builds, call it multiple times with chunks.
-5. brick_get_scene → Call anytime to inspect what's currently built
-6. brick_remove_brick → Remove a specific brick by ID (use brick_get_scene to find IDs). Also removes unsupported bricks above it.
-7. brick_clear_scene → Call to remove all bricks and start over
+5. brick_import_lxfml → Import a full .lxfml model directly. Use this for .lxfml files instead of manually converting Bone transforms.
+6. brick_prepare_lxfml_build → Create a separate step-by-step .lxfml build session without modifying the current scene.
+7. brick_get_lxfml_build_step → Inspect the current/requested LEGO instruction step and next part.
+8. brick_place_lxfml_next → Place one part at a time (default) or one full LEGO step from a prepared session.
+9. brick_get_scene → Call anytime to inspect what's currently built
+10. brick_remove_brick → Remove a specific brick by ID (use brick_get_scene to find IDs). Also removes unsupported bricks above it.
+11. brick_clear_scene → Call to remove all bricks and start over
 
 CRITICAL: You must call brick_render_scene before your first brick_place call. Placing bricks without rendering the scene first means the user has no viewer open and sees nothing.
 
 ## Brick Types
 Any LDraw part number works as a typeId. brick_get_available gives you ~30 starters plus the full category index. brick_search_parts gives you any category or name match with dimensions included — use it whenever you want a shape that isn't in the starter set. Example: need an arch for a doorway → brick_search_parts({category: "Arch"}) → pick one → brick_place.
+
+## Importing LXFML files
+If the user gives you a .lxfml file, call brick_import_lxfml with the raw XML and clear=true unless the user explicitly wants to append to the current scene. Do NOT feed raw LXFML Bone matrices into brick_place_transform. LXFML uses LEGO/LDD design IDs, material IDs, per-part corrections, axis remapping, and scale conversion; brick_import_lxfml applies the bundled lxf2ldr/LDraw.xml mapping and emits exact scene transforms.
+
+If the user wants to build together, step by step, or piece by piece, do NOT call brick_import_lxfml. Call brick_prepare_lxfml_build first; it parses BuildingInstruction/Step/In brickRef data into a separate session and does not touch the scene. Then use brick_get_lxfml_build_step to discuss the current step and brick_place_lxfml_next with unit="part" for one piece at a time or unit="step" for the whole current LEGO step. Only pass clearBeforeFirstPlace=true when the user explicitly wants to start the guided build from an empty scene.
+
+Use brick_place_transform only when you already have canonical LDraw transforms or a Three.js matrix16 in scene units. Valid transform.units values are exactly "scene" and "ldd"; anything else is invalid.
 
 ## Beyond standard bricks — specialty parts
 
@@ -514,6 +795,7 @@ Typical workflow for vehicles:
 // and the app iframe, so per-closure state won't be visible across both.
 // Module-level state ensures both sessions read/write the same scene.
 let scene: SceneData = { name: "Untitled", bricks: [] };
+const lxfmlBuildSessions = new Map<string, LxfmlBuildSession>();
 
 type BuildMode = 'strict' | 'relaxed';
 let buildMode: BuildMode = 'strict';
@@ -898,15 +1180,15 @@ export function createServer(): McpServer {
         const cols = lines[i].split(",").map(c => c.trim());
         const [typeId, xs, ys, zs, rot, col] = cols;
         const x = parseInt(xs, 10), y = parseInt(ys, 10), z = parseInt(zs, 10);
-        const rotation = (rot || "0") as "0" | "90" | "180" | "270";
+        const rotation = parseRotation(rot);
         const color = col || "#cc0000";
 
         if (!typeId || !Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) {
           parseErrors.push({ row: i + 1, ok: false, error: "Malformed row — need typeId,x,y,z[,rotation,color]", line: lines[i] });
           continue;
         }
-        if (!["0", "90", "180", "270"].includes(rotation)) {
-          parseErrors.push({ row: i + 1, ok: false, error: `Invalid rotation "${rot}" — must be 0|90|180|270`, line: lines[i] });
+        if (rotation === null) {
+          parseErrors.push({ row: i + 1, ok: false, error: `Invalid rotation "${rot}" — must be a number of degrees`, line: lines[i] });
           continue;
         }
         const brickType = findBrickType(typeId);
@@ -918,7 +1200,7 @@ export function createServer(): McpServer {
           row: i + 1, line: lines[i], brickType,
           instance: {
             id: generateId(), typeId, position: { x, y, z },
-            rotation: Number(rotation) as 0 | 90 | 180 | 270, color,
+            rotation, color,
           },
         });
       }
@@ -1050,6 +1332,309 @@ export function createServer(): McpServer {
           results,
         }) }],
         isError: placed === 0 && failed > 0,
+      };
+    },
+  );
+
+  // ── Tool 4b: brick_place_transform (model-facing exact transform) ───────
+
+  server.registerTool(
+    "brick_place_transform",
+    {
+      description: "Place one or more exact-transform LDraw bricks. Transform bricks are persisted in the scene and bypass grid support/collision/footprint validation. matrix12 is LDraw line-type-1 order a,b,c,d,e,f,g,h,i,x,y,z. matrix16 is row-major scene matrix for Three.js Matrix4.set(). Use this only for canonical LDraw/scene transforms. For raw .lxfml files, use brick_import_lxfml instead.",
+      inputSchema: {
+        bricksJson: z.string().describe('JSON array of bricks: [{ "typeId":"3001", "color":"#cc0000", "transform": { "format":"matrix16", "matrix":[...16 numbers], "units":"scene" }, "id":"optional" }]. transform.units must be "scene" or "ldd". Do not use raw LXFML Bone matrices here; call brick_import_lxfml.'),
+      },
+    },
+    async ({ bricksJson }) => {
+      let rows: unknown;
+      try {
+        rows = JSON.parse(bricksJson);
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Invalid JSON: ${e instanceof Error ? e.message : "parse error"}` }) }], isError: true };
+      }
+      if (!Array.isArray(rows)) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Expected a JSON array" }) }], isError: true };
+      }
+
+      const results: { row: number; ok: boolean; id?: string; typeId?: string; error?: string }[] = [];
+      let placed = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] as any;
+        const typeId = typeof row?.typeId === "string" ? row.typeId.replace(/\.dat$/i, "") : "";
+        const def = typeId ? findBrickType(typeId) : undefined;
+        if (!def) {
+          results.push({ row: i + 1, ok: false, error: `Unknown brick type "${typeId || "(missing)"}"` });
+          continue;
+        }
+        const t = row.transform ?? row;
+        const format = t.format === "matrix12" || t.format === "matrix16" ? t.format : undefined;
+        const units = t.units === "ldd" || t.units === "scene" ? t.units : undefined;
+        const matrix = Array.isArray(t.matrix) ? t.matrix.map(Number) : undefined;
+        if (!format || !matrix || !units) {
+          results.push({
+            row: i + 1,
+            ok: false,
+            typeId,
+            error: !units
+              ? `Invalid transform.units "${String(t.units ?? "(missing)")}". Expected "scene" or "ldd". For raw .lxfml files, use brick_import_lxfml.`
+              : "Missing transform.format or transform.matrix",
+          });
+          continue;
+        }
+        const transform = normalizeTransform(format, matrix, units);
+        if (!transform) {
+          results.push({ row: i + 1, ok: false, typeId, error: `Invalid ${format} matrix` });
+          continue;
+        }
+        const instance: BrickInstance = {
+          id: typeof row.id === "string" ? row.id : generateId(),
+          typeId,
+          position: getTransformPosition(transform),
+          rotation: 0,
+          color: typeof row.color === "string" ? row.color : "#cc0000",
+          transform,
+        };
+        scene.bricks.push(instance);
+        results.push({ row: i + 1, ok: true, id: instance.id, typeId });
+        placed++;
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          summary: { placed, failed: rows.length - placed, totalBricks: scene.bricks.length },
+          results,
+        }) }],
+        isError: placed === 0,
+      };
+    },
+  );
+
+  // ── Tool 4c: brick_import_lxfml (model-facing exact LXFML import) ───────
+
+  server.registerTool(
+    "brick_import_lxfml",
+    {
+      description: "Import LXFML using lxf2ldr/LDraw.xml mapping. Converts Part(Bone, designID, materialID) to LDraw part/color, canonical LDraw line-type-1 transform, and exact scene transform. Imported bricks bypass grid placement wrappers and collisions.",
+      inputSchema: {
+        lxfml: z.string().optional().default("").describe("Raw LXFML XML text"),
+        lxfmlPath: z.string().optional().describe("Optional local .lxfml file path to read server-side. Prefer this when the user provides a local file path."),
+        ldrawXml: z.string().optional().describe("Optional raw LDraw.xml mapping text. If omitted, imports/generic_iron_studio_v5_lxfml/ldraw.xml is used."),
+        clear: z.boolean().optional().default(false).describe("Clear current scene before import"),
+        name: z.string().optional().describe("Optional scene name"),
+      },
+    },
+    async ({ lxfml, lxfmlPath, ldrawXml, clear, name }) => {
+      let mapping: LDrawMapping;
+      try {
+        mapping = getLDrawMapping(ldrawXml);
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Could not load LDraw.xml mapping: ${e instanceof Error ? e.message : "read error"}` }) }], isError: true };
+      }
+
+      let lxfmlText = lxfml;
+      if (lxfmlPath) {
+        try {
+          lxfmlText = fsSync.readFileSync(lxfmlPath, "utf-8");
+        } catch (e) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Could not read LXFML file: ${e instanceof Error ? e.message : "read error"}` }) }], isError: true };
+        }
+      }
+
+      const colors = getLDConfigColors();
+      const rawParts = parseLxfmlParts(lxfmlText);
+      const imported: BrickInstance[] = [];
+      const ldrLines: string[] = ["0 Imported from LXFML"];
+      const skipped: Record<string, number> = {};
+
+      for (const raw of rawParts) {
+        const converted = convertLxfmlPart(raw, mapping, colors);
+        if (!converted || !findBrickType(converted.ldrawPartId)) {
+          const key = raw.designID;
+          skipped[key] = (skipped[key] ?? 0) + 1;
+          continue;
+        }
+        ldrLines.push(ldrawLineType1(converted));
+        imported.push({
+          id: converted.id,
+          typeId: converted.ldrawPartId,
+          position: getTransformPosition({ format: "matrix16", matrix: converted.sceneMatrix16, units: "scene" }),
+          rotation: 0,
+          color: converted.color,
+          transform: { format: "matrix16", matrix: converted.sceneMatrix16, units: "scene" },
+        });
+      }
+
+      if (clear) {
+        scene.bricks = [];
+        grid.clear();
+      }
+      if (name) scene.name = name;
+      scene.bricks.push(...imported);
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          imported: imported.length,
+          skipped: Object.values(skipped).reduce((a, b) => a + b, 0),
+          skippedByDesignID: skipped,
+          totalBricks: scene.bricks.length,
+          ldr: ldrLines.join("\n"),
+          scene: sceneWithFootprints(),
+        }) }],
+        isError: imported.length === 0,
+      };
+    },
+  );
+
+  // ── Tool 4d: prepare step-by-step LXFML building session ────────────────
+
+  server.registerTool(
+    "brick_prepare_lxfml_build",
+    {
+      description: "Prepare a separate step-by-step LXFML build session from BuildingInstruction/Step/In brickRef data. This does not modify the current scene. Use brick_place_lxfml_next afterward to place one part at a time or a whole LEGO step.",
+      inputSchema: {
+        lxfml: z.string().optional().default("").describe("Raw LXFML XML text"),
+        lxfmlPath: z.string().optional().describe("Optional local .lxfml file path to read server-side. Prefer this when the user provides a local file path."),
+        ldrawXml: z.string().optional().describe("Optional raw LDraw.xml mapping text. If omitted, imports/generic_iron_studio_v5_lxfml/ldraw.xml is used."),
+        name: z.string().optional().describe("Optional build session name"),
+      },
+    },
+    async ({ lxfml, lxfmlPath, ldrawXml, name }) => {
+      let mapping: LDrawMapping;
+      try {
+        mapping = getLDrawMapping(ldrawXml);
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Could not load LDraw.xml mapping: ${e instanceof Error ? e.message : "read error"}` }) }], isError: true };
+      }
+
+      let lxfmlText = lxfml;
+      if (lxfmlPath) {
+        try {
+          lxfmlText = fsSync.readFileSync(lxfmlPath, "utf-8");
+        } catch (e) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Could not read LXFML file: ${e instanceof Error ? e.message : "read error"}` }) }], isError: true };
+        }
+      }
+      if (!lxfmlText?.trim()) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Missing LXFML XML text or lxfmlPath" }) }], isError: true };
+      }
+
+      const session = createLxfmlBuildSession({
+        lxfmlText,
+        name: name ?? (lxfmlPath ? path.basename(lxfmlPath, path.extname(lxfmlPath)) : undefined),
+        mapping,
+        colors: getLDConfigColors(),
+      });
+      lxfmlBuildSessions.set(session.id, session);
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          ...summarizeLxfmlBuildSession(session),
+          currentStep: session.steps[0]
+            ? { index: session.steps[0].index, refID: session.steps[0].refID, bricks: session.steps[0].bricks.length }
+            : null,
+        }) }],
+        isError: false,
+      };
+    },
+  );
+
+  server.registerTool(
+    "brick_get_lxfml_build_step",
+    {
+      description: "Inspect a prepared step-by-step LXFML build session without modifying the scene. Shows current or requested step and the next part to place.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        sessionId: z.string().describe("Session ID returned by brick_prepare_lxfml_build"),
+        stepIndex: z.number().int().optional().describe("Optional step index to inspect. Defaults to the current cursor step."),
+      },
+    },
+    async ({ sessionId, stepIndex }) => {
+      const session = lxfmlBuildSessions.get(sessionId);
+      if (!session) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Unknown LXFML build session "${sessionId}"` }) }], isError: true };
+      }
+
+      const step = session.steps[stepIndex ?? session.stepCursor];
+      const next = getCursorPart(session);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          ...summarizeLxfmlBuildSession(session),
+          step: step ? {
+            index: step.index,
+            refID: step.refID,
+            bricks: step.bricks.length,
+            parts: step.bricks.reduce((sum, brick) => sum + brick.parts.length, 0),
+            buildableParts: step.bricks.reduce((sum, brick) => sum + brick.parts.filter((part) => part.converted).length, 0),
+            missingParts: step.bricks.reduce((sum, brick) => sum + brick.parts.filter((part) => !part.converted).length, 0),
+          } : null,
+          next: next ? {
+            stepIndex: next.step.index,
+            brickRef: next.brick.brickRef,
+            partRef: next.part.raw.partRef,
+            legoDesignID: next.part.raw.designID,
+            ldrawPartId: next.part.converted?.ldrawPartId,
+            color: next.part.converted?.color,
+            missing: !next.part.converted,
+            reason: next.part.reason,
+          } : null,
+        }) }],
+        isError: false,
+      };
+    },
+  );
+
+  server.registerTool(
+    "brick_place_lxfml_next",
+    {
+      description: "Place the next item from a prepared LXFML build session into the current scene. unit=part places one part; unit=step places all remaining parts in the current LEGO step. Does not clear the scene unless clearBeforeFirstPlace=true and nothing has been placed from this session yet.",
+      inputSchema: {
+        sessionId: z.string().describe("Session ID returned by brick_prepare_lxfml_build"),
+        unit: z.enum(["part", "step"]).optional().default("part").describe("Place one part or all remaining parts in the current LEGO step"),
+        clearBeforeFirstPlace: z.boolean().optional().default(false).describe("Clear the current scene before the first placement from this build session"),
+      },
+    },
+    async ({ sessionId, unit, clearBeforeFirstPlace }) => {
+      const session = lxfmlBuildSessions.get(sessionId);
+      if (!session) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Unknown LXFML build session "${sessionId}"` }) }], isError: true };
+      }
+      if (clearBeforeFirstPlace && session.placed === 0) {
+        scene.bricks = [];
+        grid.clear();
+        scene.name = session.name;
+      }
+
+      const firstItem = getCursorPart(session);
+      const startStepIndex = firstItem?.step.index;
+      const results: unknown[] = [];
+      let nextItem = firstItem;
+      do {
+        const item = nextItem;
+        if (!item) break;
+        if (unit === "step" && item.step.index !== startStepIndex) break;
+        results.push({
+          stepIndex: item.step.index,
+          brickRef: item.brick.brickRef,
+          partRef: item.part.raw.partRef,
+          ...placeLxfmlBuildPart(session, item),
+        });
+        nextItem = getCursorPart(session);
+      } while (unit === "step");
+
+      const placed = results.filter((result: any) => result.ok).length;
+      const skipped = results.filter((result: any) => result.skipped).length;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          summary: {
+            placed,
+            skipped,
+            done: session.stepCursor >= session.steps.length,
+            totalSceneBricks: scene.bricks.length,
+          },
+          cursor: summarizeLxfmlBuildSession(session).cursor,
+          results,
+        }) }],
+        isError: results.length === 0,
       };
     },
   );
@@ -1239,7 +1824,7 @@ export function createServer(): McpServer {
         x: z.number().int().describe(`X position in stud units (0 to ${BASEPLATE_SIZE - 1})`),
         y: z.number().int().min(0).describe("Y position (plate-height units)"),
         z: z.number().int().describe(`Z position in stud units (0 to ${BASEPLATE_SIZE - 1})`),
-        rotation: z.enum(["0", "90", "180", "270"]).optional().default("0").describe("Rotation degrees"),
+        rotation: z.union([z.string(), z.number()]).optional().default("0").describe("Rotation degrees"),
         color: z.string().optional().default("#cc0000").describe("Hex color"),
       },
       _meta: { ui: { visibility: ["app"] } },
@@ -1249,11 +1834,15 @@ export function createServer(): McpServer {
       if (!brickType) {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Unknown brick type "${typeId}". Use a valid LDraw part number.` }) }], isError: true };
       }
+      const parsedRotation = parseRotation(rotation);
+      if (parsedRotation === null) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Invalid rotation "${rotation}" — must be a number of degrees.` }) }], isError: true };
+      }
       const instance: BrickInstance = {
         id: generateId(),
         typeId,
         position: { x, y, z },
-        rotation: Number(rotation) as 0 | 90 | 180 | 270,
+        rotation: parsedRotation,
         color: color ?? "#cc0000",
       };
       const boundsErr = checkBounds(instance, brickType);
@@ -1390,7 +1979,7 @@ export function createServer(): McpServer {
       description: "Set a brick's rotation.",
       inputSchema: {
         brickId: z.string().describe("ID of the brick to rotate"),
-        rotation: z.enum(["0", "90", "180", "270"]).describe("New rotation in degrees"),
+        rotation: z.union([z.string(), z.number()]).describe("New rotation in degrees"),
       },
       _meta: { ui: { visibility: ["app"] } },
     },
@@ -1403,7 +1992,11 @@ export function createServer(): McpServer {
       if (!brickType) {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Invalid brick type "${brick.typeId}" on brick ${brickId}.` }) }], isError: true };
       }
-      const rotated: BrickInstance = { ...brick, rotation: Number(rotation) as 0 | 90 | 180 | 270 };
+      const parsedRotation = parseRotation(rotation);
+      if (parsedRotation === null) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Invalid rotation "${rotation}" — must be a number of degrees.` }) }], isError: true };
+      }
+      const rotated: BrickInstance = { ...brick, rotation: parsedRotation };
       const boundsErr = checkBounds(rotated, brickType);
       if (boundsErr) {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Cannot rotate ${brick.typeId} at (${brick.position.x},${brick.position.y},${brick.position.z}) to ${rotation}°: ${boundsErr.error}` }) }], isError: true };
@@ -1419,7 +2012,7 @@ export function createServer(): McpServer {
         grid.place(brickId, computeOccupiedCells(brick, brickType)); // restore
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Cannot rotate ${brick.typeId} at (${brick.position.x},${brick.position.y},${brick.position.z}) to ${rotation}°: collision — overlaps an existing brick` }) }], isError: true };
       }
-      brick.rotation = Number(rotation) as 0 | 90 | 180 | 270;
+      brick.rotation = parsedRotation;
       grid.place(brickId, computeOccupiedCells(brick, brickType));
       // Cascade: remove any bricks left unsupported by the footprint change (strict mode only)
       let cascadeCount = 0;
@@ -1526,6 +2119,28 @@ export function createServer(): McpServer {
         for (const brick of sorted) {
           const bt = findBrickType(brick.typeId);
           if (!bt) { dropped++; continue; }
+          if (brick.transform) {
+            const format = brick.transform.format === "matrix12" || brick.transform.format === "matrix16"
+              ? brick.transform.format
+              : undefined;
+            const units = brick.transform.units === "ldd" || brick.transform.units === "scene"
+              ? brick.transform.units
+              : undefined;
+            const matrix = Array.isArray(brick.transform.matrix)
+              ? brick.transform.matrix.map(Number)
+              : undefined;
+            if (!format || !units || !matrix) { dropped++; continue; }
+            const transform = normalizeTransform(format, matrix, units);
+            if (!transform) { dropped++; continue; }
+            const exact: BrickInstance = {
+              ...brick,
+              transform,
+              position: getTransformPosition(transform),
+              rotation: 0,
+            };
+            valid.push(exact);
+            continue;
+          }
           if (checkBounds(brick, bt)) { dropped++; continue; }
           if (buildMode === 'strict' && !checkSupport(valid, brick, bt)) { dropped++; continue; }
           if (checkCollision(valid, brick, bt)) { dropped++; continue; }
