@@ -277,7 +277,9 @@ To add an entirely new geometry style:
 The project includes a built-in visual test harness for testing MCP tools without a host. Start the server and navigate to:
 
 ```
+
 http://localhost:3001/test
+
 ```
 
 The harness connects directly to the MCP server and provides a sidebar with buttons for every tool — render the scene, place bricks, clear, export, etc. The 3D viewport is embedded alongside so you can see results immediately.
