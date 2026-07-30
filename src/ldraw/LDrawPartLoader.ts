@@ -37,6 +37,7 @@ export type LDrawFileFetcher = (partId: string) => Promise<Record<string, string
 
 export class LDrawPartLoader {
   private cache = new Map<string, THREE.Group>();
+  private rawCache = new Map<string, THREE.Group>();
   private inflight = new Map<string, Promise<THREE.Group | null>>();
   private loader: LDrawLoader;
   private seeded = new Set<string>(); // canonical paths already handed to setData
@@ -143,7 +144,9 @@ export class LDrawPartLoader {
       const group = await new Promise<THREE.Group>((resolve, reject) => {
         this.loader.parse(files[partKey], resolve, reject);
       });
+      const rawTemplate = this.prepareRawTemplate(group.clone());
       const template = this.prepareTemplate(group, partId);
+      this.rawCache.set(partId, rawTemplate);
       this.cache.set(partId, template);
       return template;
     } catch (e) {
@@ -199,6 +202,23 @@ export class LDrawPartLoader {
     return container;
   }
 
+  private prepareRawTemplate(group: THREE.Group): THREE.Group {
+    const container = new THREE.Group();
+    container.add(group);
+
+    const toRemove: THREE.Object3D[] = [];
+    container.traverse((child) => {
+      if ((child as any).isConditionalLine) {
+        toRemove.push(child);
+      }
+    });
+    for (const obj of toRemove) {
+      obj.parent?.remove(obj);
+    }
+
+    return container;
+  }
+
   /**
    * Create a colored clone of a loaded template.
    * Each clone gets fresh materials so colors can be set independently.
@@ -233,6 +253,32 @@ export class LDrawPartLoader {
           roughness: 0.6,
           metalness: 0.1,
           side: THREE.DoubleSide,  // Needed because negative Y scale flips winding
+        });
+        child.castShadow = true;
+        child.receiveShadow = true;
+      } else if (child instanceof THREE.LineSegments) {
+        child.material = new THREE.LineBasicMaterial({ color: edgeColor });
+      }
+    });
+
+    return clone;
+  }
+
+  createRawColoredClone(partId: string, color: string): THREE.Object3D | null {
+    const template = this.rawCache.get(partId);
+    if (!template) return null;
+
+    const clone = template.clone();
+    const threeColor = new THREE.Color(color);
+    const edgeColor = new THREE.Color(color).multiplyScalar(0.5);
+
+    clone.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.material = new THREE.MeshStandardMaterial({
+          color: threeColor,
+          roughness: 0.6,
+          metalness: 0.1,
+          side: THREE.DoubleSide,
         });
         child.castShadow = true;
         child.receiveShadow = true;
