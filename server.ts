@@ -14,6 +14,7 @@ import type { BrickDefinition } from "./src/bricks/types.js";
 import { parseLDrawPart, setLDrawDir } from "./src/ldraw/ldraw-dimensions.js";
 import { OccupancyGrid, computeOccupiedCells, computeCollisionCells, computeBottomCells, isCardinalRotation } from "./src/engine/OccupancyGrid.js";
 import {
+  centerCanonicalLxfmlParts,
   convertLxfmlPart,
   ldrawLineType1,
   parseLDConfigColors,
@@ -419,8 +420,19 @@ function createLxfmlBuildSession(input: {
   const rawParts = parseLxfmlParts(input.lxfmlText);
   const partsByBrickRef = new Map<string, LxfmlBuildPart[]>();
 
+  const convertedById = new Map(
+    centerCanonicalLxfmlParts(
+      rawParts
+        .map((raw) => convertLxfmlPart(raw, input.mapping, input.colors))
+        .filter((part): part is CanonicalLxfmlPart => Boolean(part && findBrickType(part.ldrawPartId))),
+      BASEPLATE_SIZE / 2,
+      BASEPLATE_SIZE / 2,
+    ).parts.map((part) => [part.id, part]),
+  );
+
   for (const raw of rawParts) {
-    const converted = convertLxfmlPart(raw, input.mapping, input.colors);
+    const initiallyConverted = convertLxfmlPart(raw, input.mapping, input.colors);
+    const converted = initiallyConverted ? convertedById.get(initiallyConverted.id) ?? initiallyConverted : null;
     const reason = !converted
       ? "conversion_failed"
       : !findBrickType(converted.ldrawPartId)
@@ -1476,7 +1488,7 @@ export function createServer(): McpServer {
 
       const colors = getLDConfigColors();
       const rawParts = parseLxfmlParts(lxfmlText);
-      const imported: BrickInstance[] = [];
+      const convertedParts: CanonicalLxfmlPart[] = [];
       const ldrLines: string[] = ["0 Imported from LXFML"];
       const skipped: Record<string, number> = {};
 
@@ -1487,6 +1499,16 @@ export function createServer(): McpServer {
           skipped[key] = (skipped[key] ?? 0) + 1;
           continue;
         }
+        convertedParts.push(converted);
+      }
+
+      const centered = centerCanonicalLxfmlParts(
+        convertedParts,
+        BASEPLATE_SIZE / 2,
+        BASEPLATE_SIZE / 2,
+      );
+      const imported: BrickInstance[] = [];
+      for (const converted of centered.parts) {
         ldrLines.push(ldrawLineType1(converted));
         imported.push({
           id: converted.id,
@@ -1515,6 +1537,8 @@ export function createServer(): McpServer {
           skipped: Object.values(skipped).reduce((a, b) => a + b, 0),
           skippedByDesignID: skipped,
           totalBricks: scene.bricks.length,
+          centeredAt: { x: BASEPLATE_SIZE / 2, z: BASEPLATE_SIZE / 2 },
+          centerOffset: centered.offset,
           ldr: ldrLines.join("\n"),
           scene: sceneWithFootprints(),
         }) }],

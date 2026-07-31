@@ -6,6 +6,7 @@
 <title>Brick Builder - Visual Test Harness</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root { --room-background: radial-gradient(circle at 50% 32%, #425466 0%, #263746 52%, #111923 100%); }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #09090b; color: #fafafa; font-size: 13px; }
 
   /* Top bar */
@@ -25,7 +26,7 @@
   .main-layout.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 0; }
 
   /* 3D viewport */
-  #viewport { position: relative; background: #0a0a0a; overflow: hidden; }
+  #viewport { position: relative; background: var(--room-background); overflow: hidden; }
   #viewport canvas { display: block; width: 100%; height: 100%; }
   .viewport-overlay { position: absolute; bottom: 8px; left: 8px; font-size: 10px; color: #52525b; pointer-events: none; font-family: monospace; }
 
@@ -275,11 +276,11 @@ const knownTypes = {};
 // ── Three.js Scene Setup ─────────────────────────────────────────────────────
 
 const viewport = document.getElementById('viewport');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.setClearColor(0x0a0a0a);
+renderer.setClearColor(0x000000, 0);
 renderer.autoClear = false;
 viewport.appendChild(renderer.domElement);
 

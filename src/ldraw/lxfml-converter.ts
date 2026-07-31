@@ -40,6 +40,12 @@ export interface CanonicalLxfmlPart {
   sceneMatrix16: number[];
 }
 
+export interface CenteredLxfmlParts {
+  parts: CanonicalLxfmlPart[];
+  offset: { x: number; z: number };
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null;
+}
+
 type Vec3 = [number, number, number];
 type Mat3 = [[number, number, number], [number, number, number], [number, number, number]];
 
@@ -200,6 +206,51 @@ export function ldrawMatrix12ToSceneMatrix16(m: number[]): number[] {
     sz * g, sz * h, sz * i, sz * z,
     0, 0, 0, 1,
   ];
+}
+
+/**
+ * Translate a converted LXFML model so its horizontal transform bounds are
+ * centered on the requested scene point. Relative part transforms and Y are
+ * left untouched. Both scene and canonical LDraw matrices are updated so
+ * exports, full imports, and guided builds all use the same placement.
+ */
+export function centerCanonicalLxfmlParts(
+  parts: CanonicalLxfmlPart[],
+  targetX: number,
+  targetZ: number,
+): CenteredLxfmlParts {
+  if (parts.length === 0) {
+    return { parts: [], offset: { x: 0, z: 0 }, bounds: null };
+  }
+
+  const xs = parts.map((part) => part.sceneMatrix16[3]);
+  const zs = parts.map((part) => part.sceneMatrix16[11]);
+  const bounds = {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minZ: Math.min(...zs),
+    maxZ: Math.max(...zs),
+  };
+  const offset = {
+    x: targetX - (bounds.minX + bounds.maxX) / 2,
+    z: targetZ - (bounds.minZ + bounds.maxZ) / 2,
+  };
+
+  return {
+    parts: parts.map((part) => {
+      const sceneMatrix16 = [...part.sceneMatrix16];
+      sceneMatrix16[3] += offset.x;
+      sceneMatrix16[11] += offset.z;
+
+      const ldrawMatrix12 = [...part.ldrawMatrix12];
+      ldrawMatrix12[9] += offset.x / LDRAW_TO_SCENE_SCALE;
+      ldrawMatrix12[11] += offset.z / LDRAW_TO_SCENE_SCALE;
+
+      return { ...part, sceneMatrix16, ldrawMatrix12 };
+    }),
+    offset,
+    bounds,
+  };
 }
 
 function parseAttrs(source: string): Record<string, string> {
