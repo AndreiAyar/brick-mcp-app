@@ -545,6 +545,7 @@ function placeLxfmlBuildPart(session: LxfmlBuildSession, item: ReturnType<typeof
     typeId: instance.typeId,
     color: instance.color,
     legoDesignID: part.converted.legoDesignID,
+    placedBrick: instance,
   };
 }
 
@@ -797,6 +798,17 @@ Typical workflow for vehicles:
 let scene: SceneData = { name: "Untitled", bricks: [] };
 const lxfmlBuildSessions = new Map<string, LxfmlBuildSession>();
 
+type SceneUpdateRecord =
+  | { revision: number; type: "placement"; brick: BrickInstance; brickType?: BrickDefinition }
+  | { revision: number; type: "snapshot"; scene: unknown };
+type NewSceneUpdate =
+  | { type: "placement"; brick: BrickInstance; brickType?: BrickDefinition }
+  | { type: "snapshot"; scene: unknown };
+
+const MAX_SCENE_UPDATES = 500;
+let sceneRevision = 0;
+const sceneUpdates: SceneUpdateRecord[] = [];
+
 type BuildMode = 'strict' | 'relaxed';
 let buildMode: BuildMode = 'strict';
 let snapY: boolean = false;
@@ -858,6 +870,26 @@ export function createServer(): McpServer {
       snap: snapY,
       ...(dynamicTypes ? { dynamicTypes } : {}),
     };
+  }
+
+  function appendSceneUpdate(update: NewSceneUpdate): void {
+    sceneRevision++;
+    sceneUpdates.push({ ...update, revision: sceneRevision } as SceneUpdateRecord);
+    if (sceneUpdates.length > MAX_SCENE_UPDATES) {
+      sceneUpdates.splice(0, sceneUpdates.length - MAX_SCENE_UPDATES);
+    }
+  }
+
+  function publishPlacement(brick: BrickInstance): void {
+    appendSceneUpdate({
+      type: "placement",
+      brick: structuredClone(brick),
+      brickType: findBrickType(brick.typeId),
+    });
+  }
+
+  function publishSnapshot(): void {
+    appendSceneUpdate({ type: "snapshot", scene: structuredClone(sceneWithFootprints()) });
   }
 
   // ── Tool 1: brick_read_me (model-only, no frame) ───────────────────────
@@ -1288,6 +1320,7 @@ export function createServer(): McpServer {
 
         scene.bricks.push(instance);
         grid.place(instance.id, computeOccupiedCells(instance, brickType));
+        publishPlacement(instance);
         rowsProcessed++;
         if (wouldAddNewType) newTypesThisBatch.add(typeId);
 
@@ -1396,6 +1429,7 @@ export function createServer(): McpServer {
           transform,
         };
         scene.bricks.push(instance);
+        publishPlacement(instance);
         results.push({ row: i + 1, ok: true, id: instance.id, typeId });
         placed++;
       }
@@ -1467,9 +1501,13 @@ export function createServer(): McpServer {
       if (clear) {
         scene.bricks = [];
         grid.clear();
+        publishSnapshot();
       }
       if (name) scene.name = name;
-      scene.bricks.push(...imported);
+      for (const instance of imported) {
+        scene.bricks.push(instance);
+        publishPlacement(instance);
+      }
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify({
@@ -1602,6 +1640,7 @@ export function createServer(): McpServer {
         scene.bricks = [];
         grid.clear();
         scene.name = session.name;
+        publishSnapshot();
       }
 
       const firstItem = getCursorPart(session);
@@ -1612,11 +1651,14 @@ export function createServer(): McpServer {
         const item = nextItem;
         if (!item) break;
         if (unit === "step" && item.step.index !== startStepIndex) break;
+        const placement = placeLxfmlBuildPart(session, item);
+        if (placement.placedBrick) publishPlacement(placement.placedBrick);
+        const { placedBrick: _placedBrick, ...placementResult } = placement;
         results.push({
           stepIndex: item.step.index,
           brickRef: item.brick.brickRef,
           partRef: item.part.raw.partRef,
-          ...placeLxfmlBuildPart(session, item),
+          ...placementResult,
         });
         nextItem = getCursorPart(session);
       } while (unit === "step");
@@ -1652,6 +1694,50 @@ export function createServer(): McpServer {
     }),
   );
 
+  // Compact app-only change feed. This keeps model and iframe sessions in sync
+  // and preserves every placement made inside bulk or step-based MCP calls.
+  registerAppTool(
+    server,
+    "brick_get_scene_updates",
+    {
+      title: "Get Scene Updates",
+      description: "Return incremental scene changes for the live viewer.",
+      inputSchema: {
+        afterRevision: z.number().int().min(0).optional(),
+      },
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ afterRevision }) => {
+      if (afterRevision === undefined) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            revision: sceneRevision,
+            scene: sceneWithFootprints(),
+            updates: [],
+          }) }],
+        };
+      }
+
+      const oldestRevision = sceneUpdates[0]?.revision ?? sceneRevision + 1;
+      if (afterRevision > sceneRevision || afterRevision < oldestRevision - 1) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            revision: sceneRevision,
+            scene: sceneWithFootprints(),
+            updates: [],
+          }) }],
+        };
+      }
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          revision: sceneRevision,
+          updates: sceneUpdates.filter((update) => update.revision > afterRevision),
+        }) }],
+      };
+    },
+  );
+
   // ── Tool 6: brick_clear_scene (model-facing, no UI metadata) ──────────
 
   server.registerTool(
@@ -1664,6 +1750,7 @@ export function createServer(): McpServer {
       const count = scene.bricks.length;
       scene.bricks = [];
       grid.clear();
+      publishSnapshot();
       return sceneResult(`Cleared ${count} bricks`);
     },
   );
@@ -1707,6 +1794,7 @@ export function createServer(): McpServer {
       }
       const msg = `Removed ${removed.typeId} from (${removed.position.x}, ${removed.position.y}, ${removed.position.z})` +
         (cascadeCount > 0 ? `. Also removed ${cascadeCount} unsupported brick(s) above it.` : "");
+      publishSnapshot();
       return {
         content: [{ type: "text" as const, text: JSON.stringify({
           removed: { id: removed.id, typeId: removed.typeId, position: removed.position },
@@ -1750,6 +1838,7 @@ export function createServer(): McpServer {
           message += ` ${floatingCount} floating brick(s) remain — they will not be removed but new placements will require support.`;
         }
       }
+      publishSnapshot();
       return {
         content: [{ type: "text" as const, text: JSON.stringify({
           mode: buildMode,
@@ -1857,6 +1946,7 @@ export function createServer(): McpServer {
       }
       scene.bricks.push(instance);
       grid.place(instance.id, computeOccupiedCells(instance, brickType));
+      publishPlacement(instance);
       return sceneResult(`Added ${brickType.name} at (${x}, ${y}, ${z})`);
     },
   );
@@ -1900,6 +1990,7 @@ export function createServer(): McpServer {
 
       const msg = `Removed ${removed.typeId} from (${removed.position.x}, ${removed.position.y}, ${removed.position.z})` +
         (cascadeCount > 0 ? `. Also removed ${cascadeCount} unsupported brick(s) above it.` : "");
+      publishSnapshot();
       return sceneResult(msg);
     },
   );
@@ -1965,6 +2056,7 @@ export function createServer(): McpServer {
 
       const msg = `Moved ${brick.typeId} from (${oldPos.x},${oldPos.y},${oldPos.z}) to (${x}, ${y}, ${z})` +
         (cascadeCount > 0 ? `. Removed ${cascadeCount} unsupported brick(s) that were above old position.` : "");
+      publishSnapshot();
       return sceneResult(msg);
     },
   );
@@ -2032,6 +2124,7 @@ export function createServer(): McpServer {
 
       const msg = `Rotated ${brick.typeId} at (${brick.position.x}, ${brick.position.y}, ${brick.position.z}) to ${rotation}°` +
         (cascadeCount > 0 ? `. Removed ${cascadeCount} unsupported brick(s) above.` : "");
+      publishSnapshot();
       return sceneResult(msg);
     },
   );
@@ -2056,6 +2149,7 @@ export function createServer(): McpServer {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Brick not found: "${brickId}". It may have been removed. Call brick_get_scene to see current bricks.` }) }], isError: true };
       }
       brick.color = color;
+      publishSnapshot();
       return sceneResult(`Painted ${brick.typeId} at (${brick.position.x}, ${brick.position.y}, ${brick.position.z}) → ${color}`);
     },
   );
@@ -2148,6 +2242,7 @@ export function createServer(): McpServer {
           grid.place(brick.id, computeOccupiedCells(brick, bt));
         }
         scene = { name: imported.name, bricks: valid };
+        publishSnapshot();
         const msg = `Imported scene '${scene.name}' with ${valid.length} bricks` +
           (dropped > 0 ? ` (dropped ${dropped} invalid/floating/colliding bricks)` : "");
         return sceneResult(msg);
@@ -2172,6 +2267,7 @@ export function createServer(): McpServer {
     },
     async ({ name }) => {
       scene.name = name;
+      publishSnapshot();
       return sceneResult(`Scene renamed to '${name}'`);
     },
   );

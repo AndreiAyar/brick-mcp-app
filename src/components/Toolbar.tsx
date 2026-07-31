@@ -1,5 +1,6 @@
 import type { InteractionMode } from '../types';
 import { INTERACTION_MODES } from '../constants';
+import CollapsibleSidebar from './CollapsibleSidebar';
 
 const MODE_ICONS: Record<InteractionMode, string> = {
   look: '👁',
@@ -18,19 +19,7 @@ interface ToolbarProps {
 
 export default function Toolbar({ mode, onModeChange }: ToolbarProps) {
   return (
-    <div style={{
-      position: 'absolute',
-      left: 8,
-      top: '50%',
-      transform: 'translateY(-50%)',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 4,
-      background: 'rgba(0,0,0,0.7)',
-      borderRadius: 8,
-      padding: 4,
-      zIndex: 10,
-    }}>
+    <CollapsibleSidebar label="building tools" storageKey="brick-builder-tools-sidebar">
       {INTERACTION_MODES.map(({ mode: m, label, shortcut }) => (
         <button
           key={m}
@@ -53,6 +42,6 @@ export default function Toolbar({ mode, onModeChange }: ToolbarProps) {
           {MODE_ICONS[m]}
         </button>
       ))}
-    </div>
+    </CollapsibleSidebar>
   );
 }
