@@ -21,7 +21,8 @@
   .session-label { font-size: 10px; color: #52525b; font-family: monospace; }
 
   /* Layout */
-  .main-layout { display: grid; grid-template-columns: 1fr 300px; height: calc(100vh - 40px); }
+  .main-layout { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: calc(100vh - 40px); transition: grid-template-columns 0.15s ease; }
+  .main-layout.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 0; }
 
   /* 3D viewport */
   #viewport { position: relative; background: #0a0a0a; overflow: hidden; }
@@ -29,7 +30,10 @@
   .viewport-overlay { position: absolute; bottom: 8px; left: 8px; font-size: 10px; color: #52525b; pointer-events: none; font-family: monospace; }
 
   /* Right sidebar */
-  .sidebar { display: flex; flex-direction: column; border-left: 1px solid #27272a; overflow-y: auto; background: #09090b; }
+  .sidebar { min-width: 0; display: flex; flex-direction: column; border-left: 1px solid #27272a; overflow-y: auto; background: #09090b; transition: opacity 0.15s ease; }
+  .sidebar-collapsed .sidebar { visibility: hidden; overflow: hidden; border-left: 0; opacity: 0; pointer-events: none; }
+  .sidebar-toggle { position: absolute; top: 50%; right: 300px; z-index: 20; width: 28px; height: 44px; padding: 0; transform: translateY(-50%); border-radius: 6px 0 0 6px; background: #18181b; transition: right 0.15s ease, background 0.15s; }
+  .sidebar-collapsed .sidebar-toggle { right: 0; }
   .panel { padding: 10px; border-bottom: 1px solid #27272a; }
   .panel-header { font-size: 11px; font-weight: 500; color: #71717a; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 
@@ -118,7 +122,9 @@
     <div class="viewport-overlay" id="viewportInfo">Connect to server to load scene</div>
   </div>
 
-  <div class="sidebar">
+  <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="testSidebar" aria-expanded="true" title="Hide sidebar">&rsaquo;</button>
+
+  <div class="sidebar" id="testSidebar">
     <div class="panel">
       <div class="panel-header">Placement</div>
       <div style="margin-bottom: 6px;">
@@ -210,6 +216,29 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
 import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
+
+const mainLayout = document.querySelector('.main-layout');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const SIDEBAR_STORAGE_KEY = 'brick-builder-test-sidebar';
+
+function setSidebarCollapsed(collapsed) {
+  mainLayout.classList.toggle('sidebar-collapsed', collapsed);
+  sidebarToggle.textContent = collapsed ? '‹' : '›';
+  sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+  sidebarToggle.title = collapsed ? 'Show sidebar' : 'Hide sidebar';
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? 'closed' : 'open');
+  } catch { /* storage can be unavailable */ }
+}
+
+let sidebarStartsCollapsed = false;
+try {
+  sidebarStartsCollapsed = localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'closed';
+} catch { /* storage can be unavailable */ }
+setSidebarCollapsed(sidebarStartsCollapsed);
+sidebarToggle.addEventListener('click', () => {
+  setSidebarCollapsed(!mainLayout.classList.contains('sidebar-collapsed'));
+});
 
 // ── Colors (mirrored from src/constants.ts) ──────────────────────────────────
 const DEFAULT_COLORS = [
@@ -662,6 +691,7 @@ function onResize() {
   renderer.setSize(viewW, viewH);
 }
 window.addEventListener('resize', onResize);
+new ResizeObserver(onResize).observe(viewport);
 onResize();
 
 // Render loop
@@ -733,6 +763,9 @@ function parseToolPayload(responseBody) {
 // ── Scene Display ────────────────────────────────────────────────────────────
 
 let currentBricks = [];
+let currentSceneData = null;
+let sceneUpdateQueue = [];
+let sceneUpdateGeneration = 0;
 
 function registerDynamicTypes(dynamicTypes) {
   if (!dynamicTypes) return;
@@ -777,11 +810,13 @@ function registerDynamicTypes(dynamicTypes) {
 
 function updateSceneDisplay(payload) {
   if (!payload) return;
-  document.getElementById('scVersion').textContent = payload.version ?? '-';
+  const revision = payload.revision ?? payload.version;
+  document.getElementById('scVersion').textContent = revision ?? '-';
   if (payload.scene) {
     // Register dynamic types before rendering
     registerDynamicTypes(payload.scene.dynamicTypes);
 
+    currentSceneData = payload.scene;
     currentBricks = payload.scene.bricks;
     document.getElementById('scCount').textContent = payload.scene.bricks.length;
 
@@ -790,7 +825,7 @@ function updateSceneDisplay(payload) {
 
     // Update overlay
     document.getElementById('viewportInfo').textContent =
-      `v${payload.version} | ${payload.scene.bricks.length} bricks | Orbit: drag | Zoom: scroll`;
+      `v${revision ?? '-'} | ${payload.scene.bricks.length} bricks | Orbit: drag | Zoom: scroll`;
 
     // Update brick list
     const list = document.getElementById('brickList');
@@ -808,6 +843,69 @@ function updateSceneDisplay(payload) {
   }
 }
 
+function applySceneUpdate(update) {
+  if (update.type === 'snapshot') {
+    updateSceneDisplay({ revision: update.revision, scene: update.scene });
+    return;
+  }
+
+  const baseScene = currentSceneData ?? { name: 'Untitled', bricks: [] };
+  const existingIndex = baseScene.bricks.findIndex(brick => brick.id === update.brick.id);
+  const bricks = existingIndex === -1
+    ? [...baseScene.bricks, update.brick]
+    : baseScene.bricks.map((brick, index) => index === existingIndex ? update.brick : brick);
+  const dynamicTypes = update.brickType
+    ? { ...(baseScene.dynamicTypes ?? {}), [update.brickType.id]: update.brickType }
+    : baseScene.dynamicTypes;
+
+  updateSceneDisplay({
+    revision: update.revision,
+    scene: { ...baseScene, bricks, ...(dynamicTypes ? { dynamicTypes } : {}) },
+  });
+}
+
+setInterval(() => {
+  const update = sceneUpdateQueue.shift();
+  if (update) applySceneUpdate(update);
+}, 75);
+
+async function startSceneUpdates() {
+  const generation = ++sceneUpdateGeneration;
+  sceneUpdateQueue = [];
+  let afterRevision;
+
+  try {
+    const initialResponse = await callTool('brick_get_scene_updates');
+    const initial = parseToolPayload(initialResponse.body);
+    if (!initial || initial.revision === undefined) throw new Error('Invalid update feed response');
+    afterRevision = initial.revision;
+    if (initial.scene) updateSceneDisplay(initial);
+  } catch (e) {
+    log(`Live scene updates unavailable: ${e.message}`, 'warn');
+    await refreshScene();
+    return;
+  }
+
+  const poll = async () => {
+    if (generation !== sceneUpdateGeneration || !sessionId) return;
+    try {
+      const response = await callTool('brick_get_scene_updates', { afterRevision });
+      const payload = parseToolPayload(response.body);
+      if (payload?.revision !== undefined) {
+        afterRevision = payload.revision;
+        if (payload.scene) {
+          sceneUpdateQueue = [];
+          updateSceneDisplay(payload);
+        }
+        if (payload.updates?.length) sceneUpdateQueue.push(...payload.updates);
+      }
+    } catch { /* retry while the session is active */ }
+    if (generation === sceneUpdateGeneration) setTimeout(poll, 100);
+  };
+
+  void poll();
+}
+
 async function refreshScene() {
   try {
     const resp = await callTool('brick_get_scene');
@@ -821,6 +919,8 @@ async function refreshScene() {
 // ── Connection ───────────────────────────────────────────────────────────────
 
 window.initSession = async function() {
+  sceneUpdateGeneration++;
+  sceneUpdateQueue = [];
   sessionId = null;
   requestId = 0;
 
@@ -873,7 +973,7 @@ window.initSession = async function() {
       log(`Part sync failed: ${e.message}`, 'warn');
     }
 
-    await refreshScene();
+    await startSceneUpdates();
   } catch (e) {
     log(`Error: ${e.message}`, 'fail');
     document.getElementById('connStatus').className = 'status disconnected';
