@@ -6,7 +6,7 @@ The new banner and first three demos use frames from the author's film, [O alter
 
 | Asset | Contents | Duration |
 | --- | --- | --- |
-| `banner-lego-logo.png` | Coral/charcoal layout with a real frame of the physical and virtual models | Still |
+| `banner-lego-outline.png` | Coral/charcoal layout with a real frame of the physical and virtual models | Still |
 | `01-house.gif` | First house beside its expansion | 7.5 s |
 | `02-iron-man.gif` | First free-form attempt beside the later model-guided build | 7.5 s |
 | `03-build-together.gif` | Physical assembly, then the original camera reveal of both models | 9 s |
