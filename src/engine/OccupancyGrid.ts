@@ -13,7 +13,7 @@ export interface BrickLike {
   id: string;
   typeId: string;
   position: { x: number; y: number; z: number };
-  rotation: 0 | 90 | 180 | 270;
+  rotation: number;
 }
 
 export interface BrickDimensions {
@@ -55,6 +55,8 @@ export class OccupancyGrid {
 
   /** Check if the brick at given position has support (cell below bottom layer is occupied or on ground) */
   hasSupport(brick: BrickLike, dims: BrickDimensions): boolean {
+    if (!isCardinalRotation(brick.rotation)) return true;
+
     const bottomCells = computeBottomCells(brick, dims);
     if (bottomCells.length === 0) return false; // Defensive: no bottom → can't be supported
 
@@ -95,6 +97,8 @@ export class OccupancyGrid {
  * otherwise fills the full rectangular AABB.
  */
 export function computeOccupiedCells(brick: BrickLike, type: BrickDimensions): GridCell[] {
+  if (!isCardinalRotation(brick.rotation)) return [];
+
   const { x, y, z } = brick.position;
 
   if (type.occupancyMap) {
@@ -106,7 +110,8 @@ export function computeOccupiedCells(brick: BrickLike, type: BrickDimensions): G
 
   // Full AABB fallback for standard rectangular parts
   const cells: GridCell[] = [];
-  const isRotated = brick.rotation === 90 || brick.rotation === 270;
+  const normalized = normalizeCardinalRotation(brick.rotation);
+  const isRotated = normalized === 90 || normalized === 270;
   const sx = isRotated ? type.studsZ : type.studsX;
   const sz = isRotated ? type.studsX : type.studsZ;
 
@@ -139,9 +144,9 @@ function rotateCell(
   dz: number,
   studsX: number,
   studsZ: number,
-  rotation: 0 | 90 | 180 | 270,
+  rotation: number,
 ): { dx: number; dz: number } {
-  switch (rotation) {
+  switch (normalizeCardinalRotation(rotation)) {
     case 0:
       return { dx, dz };
     case 90:
@@ -158,10 +163,22 @@ function rotateCell(
   }
 }
 
+function normalizeCardinalRotation(rotation: number): 0 | 90 | 180 | 270 {
+  const normalized = ((rotation % 360) + 360) % 360;
+  return normalized === 90 || normalized === 180 || normalized === 270 ? normalized : 0;
+}
+
+export function isCardinalRotation(rotation: number): boolean {
+  const normalized = ((rotation % 360) + 360) % 360;
+  return normalized === 0 || normalized === 90 || normalized === 180 || normalized === 270;
+}
+
 /**
  * Compute just the bottom-layer cells (for support checking).
  */
 export function computeBottomCells(brick: BrickLike, type: BrickDimensions): GridCell[] {
+  if (!isCardinalRotation(brick.rotation)) return [];
+
   if (type.occupancyMap) {
     // Filter to cells at dy=0 (bottom layer of the part)
     const { x, y, z } = brick.position;
@@ -175,7 +192,8 @@ export function computeBottomCells(brick: BrickLike, type: BrickDimensions): Gri
 
   const cells: GridCell[] = [];
   const { x, y, z } = brick.position;
-  const isRotated = brick.rotation === 90 || brick.rotation === 270;
+  const normalized = normalizeCardinalRotation(brick.rotation);
+  const isRotated = normalized === 90 || normalized === 270;
   const sx = isRotated ? type.studsZ : type.studsX;
   const sz = isRotated ? type.studsX : type.studsZ;
 

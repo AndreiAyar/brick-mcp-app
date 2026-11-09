@@ -18,7 +18,7 @@ export class GhostPreview {
     gridX: number,
     gridY: number,
     gridZ: number,
-    rotation: 0 | 90 | 180 | 270,
+    rotation: number,
     isValid: boolean,
   ) {
     if (!this.preview || this.currentTypeId !== brickType.id) {

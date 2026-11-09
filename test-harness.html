@@ -6,6 +6,7 @@
 <title>Brick Builder - Visual Test Harness</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root { --room-background: radial-gradient(circle at 50% 32%, #425466 0%, #263746 52%, #111923 100%); }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #09090b; color: #fafafa; font-size: 13px; }
 
   /* Top bar */
@@ -21,15 +22,19 @@
   .session-label { font-size: 10px; color: #52525b; font-family: monospace; }
 
   /* Layout */
-  .main-layout { display: grid; grid-template-columns: 1fr 300px; height: calc(100vh - 40px); }
+  .main-layout { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: calc(100vh - 40px); transition: grid-template-columns 0.15s ease; }
+  .main-layout.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 0; }
 
   /* 3D viewport */
-  #viewport { position: relative; background: #0a0a0a; overflow: hidden; }
+  #viewport { position: relative; background: var(--room-background); overflow: hidden; }
   #viewport canvas { display: block; width: 100%; height: 100%; }
   .viewport-overlay { position: absolute; bottom: 8px; left: 8px; font-size: 10px; color: #52525b; pointer-events: none; font-family: monospace; }
 
   /* Right sidebar */
-  .sidebar { display: flex; flex-direction: column; border-left: 1px solid #27272a; overflow-y: auto; background: #09090b; }
+  .sidebar { min-width: 0; display: flex; flex-direction: column; border-left: 1px solid #27272a; overflow-y: auto; background: #09090b; transition: opacity 0.15s ease; }
+  .sidebar-collapsed .sidebar { visibility: hidden; overflow: hidden; border-left: 0; opacity: 0; pointer-events: none; }
+  .sidebar-toggle { position: absolute; top: 50%; right: 300px; z-index: 20; width: 28px; height: 44px; padding: 0; transform: translateY(-50%); border-radius: 6px 0 0 6px; background: #18181b; transition: right 0.15s ease, background 0.15s; }
+  .sidebar-collapsed .sidebar-toggle { right: 0; }
   .panel { padding: 10px; border-bottom: 1px solid #27272a; }
   .panel-header { font-size: 11px; font-weight: 500; color: #71717a; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 
@@ -80,6 +85,8 @@
   .placement-row select { background: #18181b; border: 1px solid #27272a; color: #fafafa; padding: 0 8px; border-radius: 6px; font-family: inherit; font-size: 12px; height: 28px; flex: 1; }
   .placement-row select:focus { outline: none; border-color: #3f3f46; }
   .placement-row .rot-display { font-size: 11px; color: #71717a; min-width: 24px; text-align: center; font-family: monospace; }
+  .placement-row .rot-input { width: 64px; height: 28px; background: #18181b; border: 1px solid #27272a; color: #fafafa; padding: 0 6px; border-radius: 6px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; }
+  .placement-row .rot-input:focus { outline: none; border-color: #3f3f46; }
   .placement-status { font-size: 11px; color: #71717a; margin-top: 4px; min-height: 14px; }
 
   /* Viewport cursor overlay */
@@ -116,7 +123,9 @@
     <div class="viewport-overlay" id="viewportInfo">Connect to server to load scene</div>
   </div>
 
-  <div class="sidebar">
+  <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="testSidebar" aria-expanded="true" title="Hide sidebar">&rsaquo;</button>
+
+  <div class="sidebar" id="testSidebar">
     <div class="panel">
       <div class="panel-header">Placement</div>
       <div style="margin-bottom: 6px;">
@@ -126,7 +135,8 @@
         <input id="placeType" list="placeTypeList" placeholder="Part ID (e.g. 3001)" style="background:#18181b; border:1px solid #27272a; color:#fafafa; padding:0 8px; border-radius:6px; font-family:'SF Mono','Fira Code',monospace; font-size:11px; height:28px; flex:1;" />
         <datalist id="placeTypeList"></datalist>
         <button onclick="rotatePlacement()" title="Rotate (R)">R</button>
-        <span class="rot-display" id="rotDisplay">0&deg;</span>
+        <input id="rotInput" class="rot-input" type="number" step="1" value="0" onchange="setPlacementRotation(this.value)" />
+        <span class="rot-display">&deg;</span>
       </div>
       <div>
         <span style="font-size:11px; color:#71717a;">Color</span>
@@ -208,6 +218,29 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
 import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 
+const mainLayout = document.querySelector('.main-layout');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const SIDEBAR_STORAGE_KEY = 'brick-builder-test-sidebar';
+
+function setSidebarCollapsed(collapsed) {
+  mainLayout.classList.toggle('sidebar-collapsed', collapsed);
+  sidebarToggle.textContent = collapsed ? '‹' : '›';
+  sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+  sidebarToggle.title = collapsed ? 'Show sidebar' : 'Hide sidebar';
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? 'closed' : 'open');
+  } catch { /* storage can be unavailable */ }
+}
+
+let sidebarStartsCollapsed = false;
+try {
+  sidebarStartsCollapsed = localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'closed';
+} catch { /* storage can be unavailable */ }
+setSidebarCollapsed(sidebarStartsCollapsed);
+sidebarToggle.addEventListener('click', () => {
+  setSidebarCollapsed(!mainLayout.classList.contains('sidebar-collapsed'));
+});
+
 // ── Colors (mirrored from src/constants.ts) ──────────────────────────────────
 const DEFAULT_COLORS = [
   { name: 'Red', hex: '#cc0000' },
@@ -243,11 +276,11 @@ const knownTypes = {};
 // ── Three.js Scene Setup ─────────────────────────────────────────────────────
 
 const viewport = document.getElementById('viewport');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.setClearColor(0x0a0a0a);
+renderer.setClearColor(0x000000, 0);
 renderer.autoClear = false;
 viewport.appendChild(renderer.domElement);
 
@@ -376,6 +409,7 @@ ldrawLoader.setConditionalLineMaterial(LDrawConditionalLineMaterial);
 ldrawLoader.smoothNormals = true;
 ldrawLoader.setPartsLibraryPath('/ldraw/');
 const ldrawTemplates = new Map(); // partId -> THREE.Group template
+const ldrawRawTemplates = new Map(); // partId -> raw LDraw-coordinate template
 let ldrawReady = false;
 
 async function initLDraw() {
@@ -399,6 +433,13 @@ async function ensureLDrawTemplate(partId) {
   if (!ldrawReady) return null;
   try {
     const group = await ldrawLoader.loadAsync(`/ldraw/parts/${partId}.dat`);
+    const rawContainer = new THREE.Group();
+    rawContainer.add(group.clone());
+    const rawRemove = [];
+    rawContainer.traverse(child => { if (child.isConditionalLine) rawRemove.push(child); });
+    rawRemove.forEach(obj => obj.parent?.remove(obj));
+    ldrawRawTemplates.set(partId, rawContainer);
+
     const container = new THREE.Group();
     container.add(group);
     container.scale.set(LDRAW_SCALE, -LDRAW_SCALE, LDRAW_SCALE);
@@ -415,6 +456,18 @@ async function ensureLDrawTemplate(partId) {
       minX: bbox.min.x, minY: bbox.min.y, minZ: bbox.min.z, maxY: bbox.max.y,
     };
     ldrawTemplates.set(partId, container);
+    // A scene may arrive before its part geometry finishes loading.
+    // Replace empty exact-transform placeholders as soon as it is ready.
+    let replacedPlaceholder = false;
+    for (const brick of currentBricks) {
+      const existing = brickMeshMap.get(brick.id);
+      if (brick.typeId === partId && existing?.userData.awaitingLDraw) {
+        brickGroup.remove(existing);
+        brickMeshMap.delete(brick.id);
+        replacedPlaceholder = true;
+      }
+    }
+    if (replacedPlaceholder) reconcileScene(currentBricks);
     return container;
   } catch (e) {
     console.warn(`LDraw: Could not load part ${partId}`, e);
@@ -425,15 +478,17 @@ async function ensureLDrawTemplate(partId) {
 function createLDrawBrickMesh(brick) {
   const cat = knownTypes[brick.typeId];
   if (!cat) return null;
-  const template = ldrawTemplates.get(brick.typeId);
+  const template = brick.transform ? ldrawRawTemplates.get(brick.typeId) : ldrawTemplates.get(brick.typeId);
   if (!template) return null;
 
   const clone = template.clone();
-  const geoBbox = template.userData.geoBbox;
-  if (geoBbox) {
-    clone.position.set(-geoBbox.minX, -geoBbox.minY, -geoBbox.minZ);
-  } else {
-    clone.position.set(cat.studsX * 0.5, cat.heightUnits * PLATE_HEIGHT, cat.studsZ * 0.5);
+  if (!brick.transform) {
+    const geoBbox = template.userData.geoBbox;
+    if (geoBbox) {
+      clone.position.set(-geoBbox.minX, -geoBbox.minY, -geoBbox.minZ);
+    } else {
+      clone.position.set(cat.studsX * 0.5, cat.heightUnits * PLATE_HEIGHT, cat.studsZ * 0.5);
+    }
   }
 
   const color = new THREE.Color(brick.color);
@@ -455,6 +510,11 @@ function createLDrawBrickMesh(brick) {
   wrapper.add(clone);
   wrapper.userData.brickId = brick.id;
 
+  if (brick.transform) {
+    applyExactTransform(wrapper, brick.transform);
+    return wrapper;
+  }
+
   // Position
   const pos = brick.position;
   const w = cat.studsX * STUD_SIZE;
@@ -475,10 +535,48 @@ function createLDrawBrickMesh(brick) {
   return wrapper;
 }
 
+function applyExactTransform(obj, transform) {
+  obj.matrixAutoUpdate = false;
+  const { format, matrix, units } = transform;
+  if (format === 'matrix16') {
+    obj.matrix.set(
+      matrix[0], matrix[1], matrix[2], matrix[3],
+      matrix[4], matrix[5], matrix[6], matrix[7],
+      matrix[8], matrix[9], matrix[10], matrix[11],
+      matrix[12], matrix[13], matrix[14], matrix[15],
+    );
+  } else if (units === 'ldd') {
+    const [a, b, c, d, e, f, g, h, i, x, y, z] = matrix;
+    const s = 0.05;
+    obj.matrix.set(
+      s * a, s * b, s * c, s * x,
+      -s * d, -s * e, -s * f, -s * y,
+      s * g, s * h, s * i, s * z,
+      0, 0, 0, 1,
+    );
+  } else {
+    const [a, b, c, d, e, f, g, h, i, x, y, z] = matrix;
+    obj.matrix.set(
+      a, b, c, x,
+      d, e, f, y,
+      g, h, i, z,
+      0, 0, 0, 1,
+    );
+  }
+  obj.matrixWorldNeedsUpdate = true;
+}
+
 function createBrickMesh(brick) {
   // Try LDraw first
   if (ldrawReady && ldrawTemplates.has(brick.typeId)) {
     return createLDrawBrickMesh(brick);
+  }
+  if (brick.transform) {
+    const placeholder = new THREE.Group();
+    placeholder.userData.brickId = brick.id;
+    placeholder.userData.awaitingLDraw = true;
+    applyExactTransform(placeholder, brick.transform);
+    return placeholder;
   }
   // Procedural fallback — generic box + studs
   const cat = knownTypes[brick.typeId];
@@ -607,6 +705,7 @@ function onResize() {
   renderer.setSize(viewW, viewH);
 }
 window.addEventListener('resize', onResize);
+new ResizeObserver(onResize).observe(viewport);
 onResize();
 
 // Render loop
@@ -678,6 +777,9 @@ function parseToolPayload(responseBody) {
 // ── Scene Display ────────────────────────────────────────────────────────────
 
 let currentBricks = [];
+let currentSceneData = null;
+let sceneUpdateQueue = [];
+let sceneUpdateGeneration = 0;
 
 function registerDynamicTypes(dynamicTypes) {
   if (!dynamicTypes) return;
@@ -722,11 +824,13 @@ function registerDynamicTypes(dynamicTypes) {
 
 function updateSceneDisplay(payload) {
   if (!payload) return;
-  document.getElementById('scVersion').textContent = payload.version ?? '-';
+  const revision = payload.revision ?? payload.version;
+  document.getElementById('scVersion').textContent = revision ?? '-';
   if (payload.scene) {
     // Register dynamic types before rendering
     registerDynamicTypes(payload.scene.dynamicTypes);
 
+    currentSceneData = payload.scene;
     currentBricks = payload.scene.bricks;
     document.getElementById('scCount').textContent = payload.scene.bricks.length;
 
@@ -735,7 +839,7 @@ function updateSceneDisplay(payload) {
 
     // Update overlay
     document.getElementById('viewportInfo').textContent =
-      `v${payload.version} | ${payload.scene.bricks.length} bricks | Orbit: drag | Zoom: scroll`;
+      `v${revision ?? '-'} | ${payload.scene.bricks.length} bricks | Orbit: drag | Zoom: scroll`;
 
     // Update brick list
     const list = document.getElementById('brickList');
@@ -753,6 +857,69 @@ function updateSceneDisplay(payload) {
   }
 }
 
+function applySceneUpdate(update) {
+  if (update.type === 'snapshot') {
+    updateSceneDisplay({ revision: update.revision, scene: update.scene });
+    return;
+  }
+
+  const baseScene = currentSceneData ?? { name: 'Untitled', bricks: [] };
+  const existingIndex = baseScene.bricks.findIndex(brick => brick.id === update.brick.id);
+  const bricks = existingIndex === -1
+    ? [...baseScene.bricks, update.brick]
+    : baseScene.bricks.map((brick, index) => index === existingIndex ? update.brick : brick);
+  const dynamicTypes = update.brickType
+    ? { ...(baseScene.dynamicTypes ?? {}), [update.brickType.id]: update.brickType }
+    : baseScene.dynamicTypes;
+
+  updateSceneDisplay({
+    revision: update.revision,
+    scene: { ...baseScene, bricks, ...(dynamicTypes ? { dynamicTypes } : {}) },
+  });
+}
+
+setInterval(() => {
+  const update = sceneUpdateQueue.shift();
+  if (update) applySceneUpdate(update);
+}, 75);
+
+async function startSceneUpdates() {
+  const generation = ++sceneUpdateGeneration;
+  sceneUpdateQueue = [];
+  let afterRevision;
+
+  try {
+    const initialResponse = await callTool('brick_get_scene_updates');
+    const initial = parseToolPayload(initialResponse.body);
+    if (!initial || initial.revision === undefined) throw new Error('Invalid update feed response');
+    afterRevision = initial.revision;
+    if (initial.scene) updateSceneDisplay(initial);
+  } catch (e) {
+    log(`Live scene updates unavailable: ${e.message}`, 'warn');
+    await refreshScene();
+    return;
+  }
+
+  const poll = async () => {
+    if (generation !== sceneUpdateGeneration || !sessionId) return;
+    try {
+      const response = await callTool('brick_get_scene_updates', { afterRevision });
+      const payload = parseToolPayload(response.body);
+      if (payload?.revision !== undefined) {
+        afterRevision = payload.revision;
+        if (payload.scene) {
+          sceneUpdateQueue = [];
+          updateSceneDisplay(payload);
+        }
+        if (payload.updates?.length) sceneUpdateQueue.push(...payload.updates);
+      }
+    } catch { /* retry while the session is active */ }
+    if (generation === sceneUpdateGeneration) setTimeout(poll, 100);
+  };
+
+  void poll();
+}
+
 async function refreshScene() {
   try {
     const resp = await callTool('brick_get_scene');
@@ -766,6 +933,8 @@ async function refreshScene() {
 // ── Connection ───────────────────────────────────────────────────────────────
 
 window.initSession = async function() {
+  sceneUpdateGeneration++;
+  sceneUpdateQueue = [];
   sessionId = null;
   requestId = 0;
 
@@ -818,7 +987,7 @@ window.initSession = async function() {
       log(`Part sync failed: ${e.message}`, 'warn');
     }
 
-    await refreshScene();
+    await startSceneUpdates();
   } catch (e) {
     log(`Error: ${e.message}`, 'fail');
     document.getElementById('connStatus').className = 'status disconnected';
@@ -1615,7 +1784,13 @@ window.togglePlacement = function() {
 
 window.rotatePlacement = function() {
   placeRotation = (placeRotation + 90) % 360;
-  document.getElementById('rotDisplay').textContent = placeRotation + '°';
+  document.getElementById('rotInput').value = String(placeRotation);
+};
+
+window.setPlacementRotation = function(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return;
+  placeRotation = next;
 };
 
 // ── Prefill tool args ────────────────────────────────────────────────────────

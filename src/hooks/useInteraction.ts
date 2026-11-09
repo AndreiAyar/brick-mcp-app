@@ -17,11 +17,11 @@ interface UseInteractionProps {
   mode: InteractionMode;
   selectedBrickType: BrickType;
   selectedColor: string;
-  rotation: 0 | 90 | 180 | 270;
+  rotation: number;
   sceneData: SceneData | null;
   selectedBrickId: string | null;
   onSelect: (id: string | null) => void;
-  onRotationChange: (r: 0 | 90 | 180 | 270) => void;
+  onRotationChange: (r: number) => void;
   onToolResult: (result: CallToolResult) => void;
 }
 
@@ -96,7 +96,7 @@ export function useInteraction({
     function getGridHit(
       event: PointerEvent,
       bt: BrickType | null = selectedBrickType,
-      rot: 0 | 90 | 180 | 270 = rotation,
+      rot: number = rotation,
       excludeId?: string,
     ) {
       raycast.updatePointer(event, canvas);
@@ -119,8 +119,9 @@ export function useInteraction({
       );
     }
 
-    function isInBounds(x: number, z: number, bt: BrickType, rot: 0 | 90 | 180 | 270): boolean {
-      const isRotated = rot === 90 || rot === 270;
+    function isInBounds(x: number, z: number, bt: BrickType, rot: number): boolean {
+      const normalized = ((rot % 360) + 360) % 360;
+      const isRotated = normalized === 90 || normalized === 270;
       const sx = isRotated ? bt.studsZ : bt.studsX;
       const sz = isRotated ? bt.studsX : bt.studsZ;
       return x >= 0 && z >= 0 && x + sx <= BASEPLATE_SIZE && z + sz <= BASEPLATE_SIZE;
@@ -193,11 +194,7 @@ export function useInteraction({
       } else if (mode === 'delete') {
         callTool('brick_remove', { brickId });
       } else if (mode === 'rotate') {
-        const brick = bricks.find((b) => b.id === brickId);
-        if (brick) {
-          const nextRot = ((brick.rotation + 90) % 360) as 0 | 90 | 180 | 270;
-          callTool('brick_rotate', { brickId, rotation: String(nextRot) });
-        }
+        callTool('brick_rotate', { brickId, rotation: String(rotation) });
       } else if (mode === 'paint') {
         callTool('brick_paint', { brickId, color: selectedColor });
       } else if (mode === 'move') {
@@ -246,7 +243,7 @@ export function useInteraction({
       if (event.target instanceof HTMLInputElement) return;
 
       if (event.key === 'r' || event.key === 'R') {
-        onRotationChange(((rotation + 90) % 360) as 0 | 90 | 180 | 270);
+        onRotationChange((rotation + 90) % 360);
       } else if (event.key === 'Delete' && selectedBrickId) {
         callTool('brick_remove', { brickId: selectedBrickId });
         onSelect(null);

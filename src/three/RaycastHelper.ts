@@ -31,7 +31,7 @@ export class RaycastHelper {
     groundPlane: THREE.Mesh,
     brickMeshes: THREE.Object3D[],
     brickType: BrickType | null,
-    rotation: 0 | 90 | 180 | 270,
+    rotation: number,
     bricks?: BrickInstance[],
     excludeId?: string,
   ): GridHit | null {

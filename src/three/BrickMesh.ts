@@ -14,8 +14,17 @@ export function createBrickMesh(brick: BrickInstance, brickType: BrickType): THR
 }
 
 function createLDrawMesh(brick: BrickInstance, brickType: BrickType): THREE.Object3D {
-  const obj = ldrawPartLoader.createColoredClone(brickType.id, brickType, brick.color);
+  const obj = brick.transform
+    ? ldrawPartLoader.createRawColoredClone(brickType.id, brick.color)
+    : ldrawPartLoader.createColoredClone(brickType.id, brickType, brick.color);
   if (!obj) {
+    if (brick.transform) {
+      const placeholder = new THREE.Group();
+      placeholder.userData.brickId = brick.id;
+      placeholder.userData.procedural = true;
+      applyBrickTransform(placeholder, brick, brickType);
+      return placeholder;
+    }
     return createProceduralMesh(brick, brickType);
   }
 
@@ -55,10 +64,16 @@ function createProceduralMesh(brick: BrickInstance, brickType: BrickType): THREE
 }
 
 export function applyBrickTransform(obj: THREE.Object3D, brick: BrickInstance, brickType: BrickType): void {
+  if (brick.transform) {
+    applyExactTransform(obj, brick);
+    return;
+  }
+
   const worldX = brick.position.x * STUD_SIZE;
   const worldY = brick.position.y * PLATE_HEIGHT;
   const worldZ = brick.position.z * STUD_SIZE;
 
+  obj.matrixAutoUpdate = true;
   obj.position.set(0, 0, 0);
   obj.rotation.set(0, 0, 0);
 
@@ -79,6 +94,41 @@ export function applyBrickTransform(obj: THREE.Object3D, brick: BrickInstance, b
 
   obj.rotation.y = rotRad;
   obj.position.set(worldX + offsetX, worldY, worldZ + offsetZ);
+}
+
+function applyExactTransform(obj: THREE.Object3D, brick: BrickInstance): void {
+  obj.matrixAutoUpdate = false;
+  obj.position.set(0, 0, 0);
+  obj.rotation.set(0, 0, 0);
+  obj.scale.set(1, 1, 1);
+
+  const { format, matrix, units } = brick.transform!;
+  if (format === 'matrix16') {
+    obj.matrix.set(
+      matrix[0], matrix[1], matrix[2], matrix[3],
+      matrix[4], matrix[5], matrix[6], matrix[7],
+      matrix[8], matrix[9], matrix[10], matrix[11],
+      matrix[12], matrix[13], matrix[14], matrix[15],
+    );
+  } else if (units === 'ldd') {
+    const [a, b, c, d, e, f, g, h, i, x, y, z] = matrix;
+    const s = 0.05;
+    obj.matrix.set(
+      s * a, s * b, s * c, s * x,
+      -s * d, -s * e, -s * f, -s * y,
+      s * g, s * h, s * i, s * z,
+      0, 0, 0, 1,
+    );
+  } else {
+    const [a, b, c, d, e, f, g, h, i, x, y, z] = matrix;
+    obj.matrix.set(
+      a, b, c, x,
+      d, e, f, y,
+      g, h, i, z,
+      0, 0, 0, 1,
+    );
+  }
+  obj.matrixWorldNeedsUpdate = true;
 }
 
 export function updateBrickColor(obj: THREE.Object3D, color: string): void {
