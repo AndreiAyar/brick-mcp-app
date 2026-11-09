@@ -456,6 +456,18 @@ async function ensureLDrawTemplate(partId) {
       minX: bbox.min.x, minY: bbox.min.y, minZ: bbox.min.z, maxY: bbox.max.y,
     };
     ldrawTemplates.set(partId, container);
+    // A scene may arrive before its part geometry finishes loading.
+    // Replace empty exact-transform placeholders as soon as it is ready.
+    let replacedPlaceholder = false;
+    for (const brick of currentBricks) {
+      const existing = brickMeshMap.get(brick.id);
+      if (brick.typeId === partId && existing?.userData.awaitingLDraw) {
+        brickGroup.remove(existing);
+        brickMeshMap.delete(brick.id);
+        replacedPlaceholder = true;
+      }
+    }
+    if (replacedPlaceholder) reconcileScene(currentBricks);
     return container;
   } catch (e) {
     console.warn(`LDraw: Could not load part ${partId}`, e);
@@ -562,6 +574,7 @@ function createBrickMesh(brick) {
   if (brick.transform) {
     const placeholder = new THREE.Group();
     placeholder.userData.brickId = brick.id;
+    placeholder.userData.awaitingLDraw = true;
     applyExactTransform(placeholder, brick.transform);
     return placeholder;
   }

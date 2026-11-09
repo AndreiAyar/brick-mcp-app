@@ -1,3 +1,72 @@
+![Brick Builder — an MCP building experiment, with the physical Iron Man model beside its digital counterpart](docs/media/banner.png)
+
+# Brick Builder MCP App
+
+Brick Builder lets an AI assistant build and edit 3D brick models through MCP. Give the assistant a description or an LXFML model, and it can place parts in a shared 3D scene that you can inspect and edit.
+
+This fork extends [dend/brick-mcp-app](https://github.com/dend/brick-mcp-app) with LDraw parts, exact model transforms, and guided LXFML building. I used it to build Iron Man on screen while assembling the physical LEGO set beside it.
+
+[Run locally](docs/LOCAL_SETUP.md) · [MCP workflow](docs/LOCAL_SETUP.md#build-through-mcp) · [Watch the experiment](https://www.youtube.com/shorts/fk6eMfdpXWc)
+
+## From a prompt to a build
+
+![A first house beside the expanded two-floor house, built through natural-language requests](docs/media/01-house.gif)
+
+Ask for a house, then ask for another floor and a garden. The assistant places parts through MCP; the viewer displays the scene returned by the server. You can orbit the camera and edit the same scene yourself.
+
+## The first Iron Man, and the second approach
+
+![The blocky first Iron Man attempt beside the detailed model built using LXFML data](docs/media/02-iron-man.gif)
+
+The first free-form attempt was a blocky red figure. For the later build, I supplied model data: part IDs, colors, positions, rotations, and instruction steps. The converter handles those transforms, so the assistant can work with the actual model instead of guessing its shape from a prompt.
+
+For this experiment, I obtained the model XML by inspecting LEGO app traffic with a man-in-the-middle proxy. The format handled by this repository is **LXFML**. Traffic capture is a separate preparation step; this app takes the resulting XML as input.
+
+## Build together, piece by piece
+
+<p align="center">
+  <img src="docs/media/03-build-together.gif" alt="Physical assembly, then Iron Man is revealed in front of the digital model on the monitor" width="480" />
+</p>
+
+I followed the paper instructions and handled the real pieces. The assistant used MCP tools to inspect the build and place parts in the digital workspace. A prepared session can advance by one part or one instruction step.
+
+## How MCP makes it work
+
+![Actual MCP outputs show preparing three parts without changing the scene, inspecting the next part, placing it, and reading the resulting scene](docs/media/04-mcp-workflow.gif)
+
+**MCP is the assistant's tool interface.** It can read the available parts and current scene, request a placement, and use the returned result for its next action. The model runs in your MCP host; this repository does not bundle an AI model.
+
+For an LXFML build, the server maps design and material IDs to LDraw parts and colors, applies per-part corrections, converts coordinate systems, and centers the model. It reads `Step` / `In brickRef` entries to keep a build cursor. Preparing or inspecting a session leaves the scene unchanged; placement tools add the converted parts.
+
+Once all placements are known, a program can import them directly. The AI is useful for conversation and choosing tool calls, but it is not needed to calculate every known placement. That distinction is part of the experiment.
+
+## Technologies and their roles
+
+| Technology | Role |
+| --- | --- |
+| MCP SDK + MCP Apps | Tool calls between the host and server, plus an embedded editor |
+| TypeScript + Express | HTTP transport, scene state, validation, and guided build sessions |
+| LDraw | Part geometry, dimensions, and color definitions |
+| LXFML converter | Model parsing, ID mapping, corrected transforms, and instruction steps |
+| React + Three.js | Editor controls, part rendering, and camera interaction |
+| Vite + esbuild | Package the client into one HTML resource and build the server |
+
+The server holds scene state in memory and shares it across MCP sessions. The embedded app polls for updates; the test harness also consumes revisioned scene updates. Grid placement checks bounds, collision, and support. **Exact-transform imports bypass those grid checks**; they do not prove that a model is physically buildable. Scenes and build sessions are lost when the server restarts unless you export them.
+
+[Local setup, mapping recovery, and tool examples](docs/LOCAL_SETUP.md). The Iron Man model file is not included in this checkout; the film documents that build. A small runnable LXFML example is included for trying the same tools.
+
+## Watch the full experiment
+
+[![Play the full LEGO and MCP experiment on YouTube](docs/media/video-poster.png)](https://www.youtube.com/shorts/fk6eMfdpXWc)
+
+[Watch on YouTube](https://www.youtube.com/shorts/fk6eMfdpXWc) · Romanian audio.
+
+---
+
+## Original project guide and demos
+
+The upstream demo and setup reference are preserved below. Notes identify the older catalog instructions that differ from this fork.
+
 <div align="center">
   <h1>Brick Builder MCP App</h1>
   <p>
@@ -30,6 +99,7 @@
 git clone https://github.com/<owner>/brick-mcp-app.git
 cd brick-mcp-app
 npm install
+npm run download:ldraw
 npm run build
 npm run serve
 ```
@@ -53,13 +123,13 @@ The server starts at **http://localhost:3001/mcp**.
 
 ## Architecture
 
-The server is the **single source of truth** for all scene state. Both the AI (LLM) and the interactive UI mutate state exclusively through MCP tools. The server validates every operation — collision detection, bounds checking, support verification — and returns authoritative results.
+The server is the **single source of truth** for all scene state. Both the AI (LLM) and the interactive UI mutate state exclusively through MCP tools. The server validates grid operations — collision detection, bounds checking, support verification — and returns authoritative results. Exact-transform model imports use a separate path that bypasses those grid checks.
 
 ### Key Design Decisions
 
 - **Shared module-level state**: The host creates separate MCP sessions for the LLM and the app iframe. Scene state lives at module level so both sessions read/write the same scene.
 - **Polling for cross-session sync**: The UI polls `brick_get_scene` every second to pick up LLM-initiated changes. User-initiated changes (via `callServerTool`) are reflected instantly.
-- **Single-brick placement**: The LLM places one brick per `brick_place` call and receives the placed brick's footprint in the response, enabling precise positioning of subsequent bricks.
+- **CSV placement**: The assistant can place one brick or a small batch per `brick_place` call and receives per-row footprints or errors for subsequent placement decisions.
 
 ## Connecting to Hosts
 
@@ -102,9 +172,9 @@ The following tools are accessible from whatever client you're using to interact
 | Tool | Description |
 |------|-------------|
 | `brick_read_me` | Returns the building guide, coordinate system, and examples |
-| `brick_get_available` | Returns all brick types with IDs, dimensions, and categories |
+| `brick_get_available` | Returns curated starter parts with IDs and dimensions, plus index categories |
 | `brick_render_scene` | Opens the 3D viewer iframe (must call before placing bricks) |
-| `brick_place` | Place a single brick. Returns placed brick with footprint for precise adjacent positioning |
+| `brick_place` | Place one brick or a CSV batch; returns footprints and per-row validation results |
 | `brick_get_scene` | Read the current scene state with all bricks and their footprints |
 | `brick_remove_brick` | Remove a single brick by ID. Cascades to remove unsupported bricks above it |
 | `brick_clear_scene` | Remove all bricks from the scene |
@@ -138,10 +208,12 @@ The 3D viewport supports seven interaction modes, switchable via the toolbar or 
 
 ## Brick Types
 
+This fork discovers parts from the downloaded LDraw library. Use `brick_get_available` for the curated starter set and `brick_search_parts` for the indexed library. The older catalog table below is historical reference.
+
 > [!NOTE]
 > This list is not final — more brick types will be added over time. See [Adding New Brick Types](#adding-new-brick-types) for how to contribute new types.
 
-20 brick types across three categories:
+Original starter catalog (preserved for reference):
 
 | Category | Types |
 |----------|-------|
@@ -161,13 +233,15 @@ The 3D viewport supports seven interaction modes, switchable via the toolbar or 
 
 ### Importing LXFML Models
 
-Use `brick_import_lxfml` for `.lxfml` files. It parses the raw XML, maps LEGO design/material IDs through the bundled `imports/generic_iron_studio_v5_lxfml/ldraw.xml`, applies per-part correction transforms, remaps axes, and emits exact scene transforms.
+Use `brick_import_lxfml` for `.lxfml` files. It parses the raw XML, maps LEGO design/material IDs through an `ldrawXml` mapping argument or the local `imports/generic_iron_studio_v5_lxfml/ldraw.xml` file ([recovery instructions](docs/LOCAL_SETUP.md#lxfml-models-and-the-mapping-file)), applies per-part correction transforms, remaps axes, and emits exact scene transforms.
 
 Do not pass raw LXFML `Bone` matrices to `brick_place_transform`. That tool only accepts canonical LDraw transforms or Three.js `matrix16` transforms already converted to scene units. Invalid transform units should be rejected instead of silently falling back to `scene`.
 
 For guided building, use `brick_prepare_lxfml_build` instead of importing the whole model. It parses `BuildingInstruction` / `Step` / `In brickRef` data into a separate in-memory build session without touching the current scene. Then inspect with `brick_get_lxfml_build_step` and place with `brick_place_lxfml_next` using `unit: "part"` for piece-by-piece building or `unit: "step"` for one LEGO instruction step at a time.
 
 ## Adding New Brick Types
+
+**Legacy static-catalog recipe.** The definition files and static catalog described below belong to the original implementation. This fork uses LDraw `.dat` files and the generated parts index instead; see [the current parts workflow](docs/LOCAL_SETUP.md#parts-library). The recipe is preserved as background.
 
 Adding a new brick requires just two files. The catalog, server validation, geometry rendering, and UI selector all pick it up automatically.
 
