@@ -1,8 +1,8 @@
-![Brick Builder — an MCP building experiment, with the physical Iron Man model beside its digital counterpart](docs/media/banner.png)
+![Brick Builder — LEGO with AI and MCP, with the physical Iron Man model beside its digital counterpart](docs/media/banner.png)
 
-# Brick Builder MCP App
+# Brick Builder — Build LEGO with AI & MCP
 
-Brick Builder lets an AI assistant build and edit 3D brick models through MCP. Give the assistant a description or an LXFML model, and it can place parts in a shared 3D scene that you can inspect and edit.
+Brick Builder lets an AI assistant build and edit 3D LEGO models through MCP. Give the assistant a description or an LXFML model, and it can place parts in a shared 3D scene that you can inspect and edit.
 
 This fork extends [dend/brick-mcp-app](https://github.com/dend/brick-mcp-app) with LDraw parts, exact model transforms, and guided LXFML building. I used it to build Iron Man on screen while assembling the physical LEGO set beside it.
 
