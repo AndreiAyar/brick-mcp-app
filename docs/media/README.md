@@ -1,10 +1,12 @@
 # README media
 
+The banner lettering uses the [official LEGO SVG asset](https://assets.lego.com/logos/v8.5.0/brand-lego.svg).
+
 The new banner and first three demos use frames from the author's film, [O alternativă la LEGO](https://www.youtube.com/shorts/fk6eMfdpXWc). The supplied source is 2160 × 3840 at 24 fps. Frames were extracted with FFmpeg at their original pixel dimensions and 24 fps, then cropped and composed in Remotion 4.0.542.
 
 | Asset | Contents | Duration |
 | --- | --- | --- |
-| `banner-lego.png` | Coral/charcoal layout with a real frame of the physical and virtual models | Still |
+| `banner-lego-logo.png` | Coral/charcoal layout with a real frame of the physical and virtual models | Still |
 | `01-house.gif` | First house beside its expansion | 7.5 s |
 | `02-iron-man.gif` | First free-form attempt beside the later model-guided build | 7.5 s |
 | `03-build-together.gif` | Physical assembly, then the original camera reveal of both models | 9 s |
