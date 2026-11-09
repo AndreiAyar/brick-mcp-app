@@ -1,4 +1,4 @@
-![Brick Builder — LEGO with AI and MCP, with the physical Iron Man model beside its digital counterpart](docs/media/banner.png)
+![Brick Builder — LEGO with AI and MCP, with the physical Iron Man model beside its digital counterpart](docs/media/banner-lego.png)
 
 # Brick Builder — Build LEGO with AI & MCP
 
